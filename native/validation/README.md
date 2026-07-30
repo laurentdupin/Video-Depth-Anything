@@ -39,5 +39,19 @@ shapes against PyTorch CPU:
 | 3 | 64 x 32 x 4 x 4 | 0.0000269% | 0.00000739 |
 
 The raw fixtures are generated locally and excluded from source control.
-The full DINOv2 + temporal DPT graph is still pending. No public inference or
-GPU capability is advertised by this intermediate correctness oracle.
+
+## Spatial encoder gate
+
+The scalar oracle also implements the complete ViT-S/14 DINOv2 encoder:
+patch projection, offset-aware bicubic position interpolation, twelve
+pre-normalized transformer blocks, six-head attention, LayerScale, exact GELU
+MLP, and normalized captures at blocks 2, 5, 8, and 11.
+
+For a deterministic 28x28 tensor, the prepared tokens match PyTorch CPU at
+`5.04e-7` relative L1. The worst of the four captured features is
+`3.13e-6` relative L1 (`0.000313%`) with maximum absolute error
+`0.0000725`.
+
+The remaining correctness step is connecting the proven spatial encoder and
+temporal modules through the DPT convolution/refinement graph. No public
+inference or GPU capability is advertised by these intermediate oracles.

@@ -42,6 +42,15 @@ if(MSVC)
     target_compile_options(vda_temporal_probe PRIVATE /W4 /permissive-)
 endif()
 
+add_executable(vda_encoder_probe
+    tools/encoder_probe.cpp
+    src/model.cpp
+    src/encoder_cpu.cpp)
+target_include_directories(vda_encoder_probe PRIVATE include src)
+if(MSVC)
+    target_compile_options(vda_encoder_probe PRIVATE /W4 /permissive-)
+endif()
+
 include(CTest)
 if(BUILD_TESTING)
     add_executable(vda_c_abi_smoke tests/c_abi_smoke.c)
