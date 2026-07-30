@@ -64,7 +64,8 @@ if(VDA_WITH_VULKAN)
             elementwise gelu layer_norm linear linear16 linear_half linear16_half
             prepare_tokens position_bicubic project_tokens
             project_tokens_half relu softmax_lastdim
-            softmax_lastdim_half temporal_attention temporal_geglu
+            softmax_lastdim_half temporal_attention
+            temporal_attention_stream temporal_geglu
             temporal_group_norm temporal_output temporal_position
             temporal_transpose)
         vda_compile_shader(${SHADER})

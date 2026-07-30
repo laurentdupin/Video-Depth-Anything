@@ -14,6 +14,12 @@ int main(void) {
             0, VDA_MODEL_VITS_RELATIVE_32_FRAMES, &context) ==
         VDA_STATUS_INVALID_ARGUMENT);
     assert(context == 0);
+    assert(
+        vda_infer_stream_bgra8_f32(
+            0, 0, 0, 0, 0, 0, 0, 0) ==
+        VDA_STATUS_INVALID_ARGUMENT);
+    assert(
+        vda_stream_reset(0) == VDA_STATUS_INVALID_ARGUMENT);
     vda_destroy(0);
     return 0;
 }

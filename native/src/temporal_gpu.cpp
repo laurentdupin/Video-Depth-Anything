@@ -1,6 +1,7 @@
 #include "temporal_gpu.h"
 
 #include "temporal_attention_spv.h"
+#include "temporal_attention_stream_spv.h"
 #include "temporal_geglu_spv.h"
 #include "temporal_group_norm_spv.h"
 #include "temporal_output_spv.h"
@@ -47,6 +48,9 @@ TemporalGpu::TemporalGpu(
       attention_(context.create_pipeline(
           vda_temporal_attention_spv,
           vda_temporal_attention_spv_size, 4, 16)),
+      attention_stream_(context.create_pipeline(
+          vda_temporal_attention_stream_spv,
+          vda_temporal_attention_stream_spv_size, 4, 20)),
       geglu_(context.create_pipeline(
           vda_temporal_geglu_spv,
           vda_temporal_geglu_spv_size, 2, 8)),
@@ -60,6 +64,7 @@ TemporalGpu::TemporalGpu(
     transpose_.set_debug_name("temporal_transpose");
     position_.set_debug_name("temporal_position");
     attention_.set_debug_name("temporal_attention");
+    attention_stream_.set_debug_name("temporal_attention_stream");
     geglu_.set_debug_name("temporal_geglu");
     output_.set_debug_name("temporal_output");
 }
@@ -79,12 +84,48 @@ std::string TemporalGpu::prefix(
 FeatureMap TemporalGpu::forward(
     std::uint32_t module_index,
     FeatureMap&& input) {
+    return forward_impl(
+        module_index, std::move(input), nullptr, nullptr);
+}
+
+FeatureMap TemporalGpu::forward_stream(
+    std::uint32_t module_index,
+    FeatureMap&& input,
+    const std::vector<const TemporalFrameCache*>& history,
+    TemporalFrameCache& output_cache) {
+    return forward_impl(
+        module_index, std::move(input), &history, &output_cache);
+}
+
+FeatureMap TemporalGpu::forward_impl(
+    std::uint32_t module_index,
+    FeatureMap&& input,
+    const std::vector<const TemporalFrameCache*>* history,
+    TemporalFrameCache* output_cache) {
+    const bool streaming = history != nullptr;
     if (module_index >= 4 || input.frames == 0 ||
         input.frames > 32 || input.channels == 0 ||
         input.channels % 32 != 0 ||
-        input.width == 0 || input.height == 0) {
+        input.width == 0 || input.height == 0 ||
+        (streaming &&
+         (input.frames != 1 ||
+          (!history->empty() && history->size() != 31) ||
+          output_cache == nullptr))) {
         throw std::invalid_argument(
             "invalid GPU temporal module input");
+    }
+    if (streaming) {
+        for (const TemporalFrameCache* cache : *history) {
+            if (!cache || cache->width != input.width ||
+                cache->height != input.height ||
+                cache->channels != input.channels) {
+                throw std::invalid_argument(
+                    "incompatible GPU temporal cache");
+            }
+        }
+        output_cache->width = input.width;
+        output_cache->height = input.height;
+        output_cache->channels = input.channels;
     }
     const std::uint32_t frames = input.frames;
     const std::uint32_t channels = input.channels;
@@ -138,11 +179,28 @@ FeatureMap TemporalGpu::forward(
         base + "transformer_blocks.0.";
     VulkanBuffer normalized =
         context_.create_device_buffer(bytes);
+    const bool cached_stream =
+        streaming && !history->empty();
+    const std::uint32_t attention_frames =
+        cached_stream ? 32 : frames;
+    const std::uint32_t attention_rows =
+        attention_frames * spatial;
+    const std::uint64_t attention_count =
+        std::uint64_t(attention_frames) * spatial * channels;
+    const VkDeviceSize attention_bytes =
+        attention_count * sizeof(float);
+    VulkanBuffer combined =
+        cached_stream
+        ? context_.create_device_buffer(attention_bytes)
+        : VulkanBuffer{};
     VulkanBuffer positioned =
-        context_.create_device_buffer(bytes);
-    VulkanBuffer query = context_.create_device_buffer(bytes);
-    VulkanBuffer key = context_.create_device_buffer(bytes);
-    VulkanBuffer value = context_.create_device_buffer(bytes);
+        context_.create_device_buffer(attention_bytes);
+    VulkanBuffer query =
+        context_.create_device_buffer(attention_bytes);
+    VulkanBuffer key =
+        context_.create_device_buffer(attention_bytes);
+    VulkanBuffer value =
+        context_.create_device_buffer(attention_bytes);
     VulkanBuffer attended =
         context_.create_device_buffer(bytes);
     VulkanBuffer attention_output =
@@ -154,7 +212,7 @@ FeatureMap TemporalGpu::forward(
         std::uint32_t heads;
     };
     const AttentionShape attention_shape{
-        spatial, frames, channels, 8};
+        spatial, attention_frames, channels, 8};
     for (std::uint32_t attention = 0;
          attention < 2;
          ++attention) {
@@ -168,44 +226,97 @@ FeatureMap TemporalGpu::forward(
             rows,
             channels,
             1.0e-5f);
+        if (streaming) {
+            output_cache->attention[attention] =
+                context_.create_device_buffer(bytes);
+            context_.copy(
+                output_cache->attention[attention], 0,
+                normalized, 0, bytes);
+        }
         const std::string attention_base =
             block + "attention_blocks." +
             std::to_string(attention) + ".";
+        const VulkanBuffer* attention_input = &normalized;
+        if (cached_stream) {
+            VulkanBuffer frame_order =
+                context_.create_device_buffer(attention_bytes);
+            for (std::size_t index = 0;
+                 index < history->size(); ++index) {
+                context_.copy(
+                    frame_order,
+                    static_cast<VkDeviceSize>(index) * bytes,
+                    (*history)[index]->attention[attention],
+                    0, bytes);
+            }
+            context_.copy(
+                frame_order, 31 * bytes,
+                normalized, 0, bytes);
+            const Shape join_shape{
+                32, channels, spatial, 1};
+            context_.dispatch(
+                transpose_,
+                {&combined, &frame_order},
+                &join_shape,
+                sizeof(join_shape),
+                divide_up(
+                    static_cast<std::uint32_t>(attention_count),
+                    256));
+            attention_input = &combined;
+        }
         const struct PositionShape {
             std::uint32_t sequences;
             std::uint32_t frames;
             std::uint32_t channels;
-        } position_shape{spatial, frames, channels};
+        } position_shape{
+            spatial, attention_frames, channels};
         context_.dispatch(
             position_,
             {
                 &positioned,
-                &normalized,
+                attention_input,
                 &weight(attention_base + "pos_encoder.pe"),
             },
             &position_shape,
             sizeof(position_shape),
-            divide_up(static_cast<std::uint32_t>(count), 256));
+            divide_up(
+                static_cast<std::uint32_t>(attention_count), 256));
         operators_.linear(
             query, positioned,
             weight(attention_base + "to_q.weight"),
-            zero_bias_, rows, channels, channels, false);
+            zero_bias_, attention_rows, channels, channels, false);
         operators_.linear(
             key, positioned,
             weight(attention_base + "to_k.weight"),
-            zero_bias_, rows, channels, channels, false);
+            zero_bias_, attention_rows, channels, channels, false);
         operators_.linear(
             value, positioned,
             weight(attention_base + "to_v.weight"),
-            zero_bias_, rows, channels, channels, false);
-        context_.dispatch(
-            attention_,
-            {&attended, &query, &key, &value},
-            &attention_shape,
-            sizeof(attention_shape),
-            divide_up(channels, 8),
-            divide_up(frames, 8),
-            spatial);
+            zero_bias_, attention_rows, channels, channels, false);
+        if (cached_stream) {
+            const struct StreamAttentionShape {
+                std::uint32_t sequences;
+                std::uint32_t frames;
+                std::uint32_t channels;
+                std::uint32_t heads;
+                std::uint32_t query_frame;
+            } stream_shape{
+                spatial, 32, channels, 8, 31};
+            context_.dispatch(
+                attention_stream_,
+                {&attended, &query, &key, &value},
+                &stream_shape,
+                sizeof(stream_shape),
+                divide_up(channels, 8), 1, spatial);
+        } else {
+            context_.dispatch(
+                attention_,
+                {&attended, &query, &key, &value},
+                &attention_shape,
+                sizeof(attention_shape),
+                divide_up(channels, 8),
+                divide_up(frames, 8),
+                spatial);
+        }
         operators_.linear(
             attention_output,
             attended,

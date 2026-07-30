@@ -102,3 +102,31 @@ RX 9070, 8.29 s on the GTX 1080, and 3.26 s on the RX 6700 XT.
 This first coherent Vulkan API is a host-tensor compatibility path: normalized
 input is uploaded once and final depth is downloaded once. It does not yet
 advertise external texture import or GPU-resident output leasing.
+
+## InferBridge stateful streaming gate
+
+ABI 3 adds `vda_infer_stream_bgra8_f32` and `vda_stream_reset` while
+preserving the independent 32-frame tensor entry point. The stream API matches
+InferBridge's worker rather than substituting clip inference:
+
+- BGRA's first three BGR bytes retain their current channel ordering;
+- frames use the worker's nearest square resize and ImageNet normalization;
+- the first frame performs the worker's seed pass and cached query pass;
+- all eight temporal attention-block inputs remain GPU-resident;
+- each new frame uses the exact first-two plus latest-29 cache selection;
+- cache deletion begins at the same frame ID and reset restores first-frame
+  behavior;
+- depth is align-corners bilinear resized and min/max normalized at the source
+  dimensions.
+
+A 15-frame 37x29 sequence at network size 28 crosses the cache-deletion
+threshold on the RX 9070. Maximum normalized-depth deviation from Python CPU
+was `0.001187` and reset reproduced frame zero with `0.000405` maximum error.
+Three-frame plus reset canaries passed on the GTX 1080 and RX 6700 XT with
+maximum errors of `0.000809` and `0.000815`, respectively. The original
+32-frame fixtures also retain their prior results on all adapters.
+
+The cache implementation exposed and fixed a Vulkan command-ordering issue:
+buffer copies inside a compute batch now record transfer barriers and the copy
+in that same command buffer instead of submitting ahead of their producers.
+`native/tools/validate_streaming.py` reproduces the stateful comparison.

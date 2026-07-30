@@ -8,10 +8,12 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace vda_native {
 
 class TemporalGpu;
+struct TemporalFrameCache;
 
 struct FeatureMap {
     VulkanBuffer buffer;
@@ -30,8 +32,16 @@ public:
     ~VdaGpuDpt();
 
     FeatureMap forward(EncoderOutput&& encoded);
+    FeatureMap forward_stream(
+        EncoderOutput&& encoded,
+        const std::vector<const TemporalFrameCache*> history[4],
+        TemporalFrameCache* output_cache[4]);
 
 private:
+    FeatureMap forward_impl(
+        EncoderOutput&& encoded,
+        const std::vector<const TemporalFrameCache*>* history,
+        TemporalFrameCache* const* output_cache);
     void select_convolution_block();
     const VulkanBuffer& selected_weight(const std::string& name) const;
 

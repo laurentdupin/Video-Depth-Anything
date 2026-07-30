@@ -8,15 +8,25 @@
 #include "encoder_gpu.h"
 #include "gpu_model.h"
 #include "operators.h"
+#include "temporal_gpu.h"
 #include "vulkan.h"
 #endif
 
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
 #include <memory>
 #include <new>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#if defined(VDA_WITH_VULKAN)
+struct vda_stream_entry {
+    std::array<vda_native::TemporalFrameCache, 4> modules;
+};
+#endif
 
 struct vda_context {
     std::unique_ptr<vda_native::ModelFile> model;
@@ -26,6 +36,11 @@ struct vda_context {
     std::unique_ptr<vda_native::VulkanOperators> operators;
     std::unique_ptr<vda_native::VdaGpuEncoder> encoder;
     std::unique_ptr<vda_native::VdaGpuDpt> dpt;
+    std::vector<std::shared_ptr<vda_stream_entry>> stream_cache;
+    std::int64_t stream_id = -1;
+    std::uint32_t stream_width = 0;
+    std::uint32_t stream_height = 0;
+    std::uint32_t stream_input_size = 0;
 #endif
 };
 
@@ -53,6 +68,95 @@ vda_status protect(Function&& function) {
         return fail(VDA_STATUS_INTERNAL_ERROR, "unknown internal error");
     }
 }
+
+std::vector<float> preprocess_stream_bgra(
+    const std::uint8_t* bgra,
+    std::uint64_t stride,
+    std::uint32_t width,
+    std::uint32_t height,
+    std::uint32_t size) {
+    const std::uint64_t plane = std::uint64_t(size) * size;
+    std::vector<float> output(
+        static_cast<std::size_t>(3 * plane));
+    constexpr float mean[3] = {0.485f, 0.456f, 0.406f};
+    constexpr float deviation[3] = {0.229f, 0.224f, 0.225f};
+    for (std::uint32_t y = 0; y < size; ++y) {
+        const std::uint32_t sy = std::min(
+            height - 1,
+            static_cast<std::uint32_t>(
+                std::uint64_t(y) * height / size));
+        const std::uint8_t* row = bgra + std::uint64_t(sy) * stride;
+        for (std::uint32_t x = 0; x < size; ++x) {
+            const std::uint32_t sx = std::min(
+                width - 1,
+                static_cast<std::uint32_t>(
+                    std::uint64_t(x) * width / size));
+            const std::uint64_t pixel =
+                std::uint64_t(y) * size + x;
+            for (std::uint32_t channel = 0;
+                 channel < 3; ++channel) {
+                output[static_cast<std::size_t>(
+                    std::uint64_t(channel) * plane + pixel)] =
+                    (row[std::uint64_t(sx) * 4 + channel] /
+                        255.0f - mean[channel]) /
+                    deviation[channel];
+            }
+        }
+    }
+    return output;
+}
+
+void resize_normalize_stream_depth(
+    const std::vector<float>& source,
+    std::uint32_t source_size,
+    float* destination,
+    std::uint32_t width,
+    std::uint32_t height) {
+    float minimum = std::numeric_limits<float>::infinity();
+    float maximum = -std::numeric_limits<float>::infinity();
+    for (std::uint32_t y = 0; y < height; ++y) {
+        const float source_y = height > 1
+            ? static_cast<float>(y) * (source_size - 1) /
+                static_cast<float>(height - 1)
+            : 0.0f;
+        const std::uint32_t y0 =
+            static_cast<std::uint32_t>(source_y);
+        const std::uint32_t y1 =
+            std::min(y0 + 1, source_size - 1);
+        const float fy = source_y - y0;
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const float source_x = width > 1
+                ? static_cast<float>(x) * (source_size - 1) /
+                    static_cast<float>(width - 1)
+                : 0.0f;
+            const std::uint32_t x0 =
+                static_cast<std::uint32_t>(source_x);
+            const std::uint32_t x1 =
+                std::min(x0 + 1, source_size - 1);
+            const float fx = source_x - x0;
+            const float top =
+                source[std::uint64_t(y0) * source_size + x0] *
+                    (1.0f - fx) +
+                source[std::uint64_t(y0) * source_size + x1] * fx;
+            const float bottom =
+                source[std::uint64_t(y1) * source_size + x0] *
+                    (1.0f - fx) +
+                source[std::uint64_t(y1) * source_size + x1] * fx;
+            const float value =
+                top * (1.0f - fy) + bottom * fy;
+            destination[std::uint64_t(y) * width + x] = value;
+            minimum = std::min(minimum, value);
+            maximum = std::max(maximum, value);
+        }
+    }
+    const float range = maximum - minimum;
+    for (std::uint64_t index = 0;
+         index < std::uint64_t(width) * height; ++index) {
+        destination[index] = range > 0.0f
+            ? (destination[index] - minimum) / range
+            : 0.0f;
+    }
+}
 }
 
 extern "C" {
@@ -62,7 +166,7 @@ uint32_t VDA_CALL vda_abi_version(void) {
 }
 
 const char* VDA_CALL vda_version_string(void) {
-    return "0.3.0-cpu-vulkan-full-graph";
+    return "0.4.0-streaming-cpu-vulkan-full-graph";
 }
 
 const char* VDA_CALL vda_status_string(vda_status status) {
@@ -216,6 +320,155 @@ vda_status VDA_CALL vda_infer_tensor_f32(
         std::copy(
             result.begin(), result.end(), depth_thw);
     });
+}
+
+vda_status VDA_CALL vda_stream_reset(
+    vda_context* context) {
+    if (!context || !context->model) {
+        return fail(
+            VDA_STATUS_INVALID_ARGUMENT,
+            "invalid stream reset context");
+    }
+#if !defined(VDA_WITH_VULKAN)
+    return fail(
+        VDA_STATUS_UNSUPPORTED,
+        "streaming requires the Vulkan executor");
+#else
+    if (!context->vulkan) {
+        return fail(
+            VDA_STATUS_UNSUPPORTED,
+            "streaming requires a Vulkan context");
+    }
+    context->stream_cache.clear();
+    context->stream_id = -1;
+    context->stream_width = 0;
+    context->stream_height = 0;
+    context->stream_input_size = 0;
+    last_error.clear();
+    return VDA_STATUS_OK;
+#endif
+}
+
+vda_status VDA_CALL vda_infer_stream_bgra8_f32(
+    vda_context* context,
+    const uint8_t* bgra,
+    uint64_t bgra_stride_bytes,
+    int32_t width,
+    int32_t height,
+    int32_t input_size,
+    float* depth,
+    uint64_t depth_elements) {
+    if (!context || !context->model || !bgra || !depth ||
+        width <= 0 || height <= 0 || input_size <= 0 ||
+        input_size % 14 != 0 ||
+        bgra_stride_bytes <
+            static_cast<std::uint64_t>(width) * 4 ||
+        depth_elements <
+            static_cast<std::uint64_t>(width) * height) {
+        return fail(
+            VDA_STATUS_INVALID_ARGUMENT,
+            "invalid streaming BGRA inference input");
+    }
+#if !defined(VDA_WITH_VULKAN)
+    return fail(
+        VDA_STATUS_UNSUPPORTED,
+        "streaming requires the Vulkan executor");
+#else
+    if (!context->vulkan || !context->encoder || !context->dpt) {
+        return fail(
+            VDA_STATUS_UNSUPPORTED,
+            "streaming requires a Vulkan context");
+    }
+    if (!context->stream_cache.empty() &&
+        (context->stream_width != static_cast<std::uint32_t>(width) ||
+         context->stream_height != static_cast<std::uint32_t>(height) ||
+         context->stream_input_size !=
+            static_cast<std::uint32_t>(input_size))) {
+        return fail(
+            VDA_STATUS_INVALID_ARGUMENT,
+            "stream dimensions changed without vda_stream_reset");
+    }
+    return protect([&] {
+        const std::uint32_t network_size =
+            static_cast<std::uint32_t>(input_size);
+        std::vector<float> prepared = preprocess_stream_bgra(
+            bgra, bgra_stride_bytes,
+            static_cast<std::uint32_t>(width),
+            static_cast<std::uint32_t>(height),
+            network_size);
+        vda_native::VulkanBuffer image =
+            context->vulkan->create_device_buffer(
+                prepared.size() * sizeof(float));
+        context->vulkan->upload(
+            image, prepared.data(),
+            prepared.size() * sizeof(float));
+
+        const auto run = [&](
+            const std::vector<std::shared_ptr<vda_stream_entry>>& selected,
+            std::shared_ptr<vda_stream_entry>& output) {
+            std::vector<const vda_native::TemporalFrameCache*>
+                history[4];
+            for (const auto& entry : selected) {
+                for (std::uint32_t module = 0;
+                     module < 4; ++module) {
+                    history[module].push_back(
+                        &entry->modules[module]);
+                }
+            }
+            output = std::make_shared<vda_stream_entry>();
+            vda_native::TemporalFrameCache* output_modules[4] = {
+                &output->modules[0], &output->modules[1],
+                &output->modules[2], &output->modules[3]};
+            return context->dpt->forward_stream(
+                context->encoder->forward(
+                    image, 1, network_size, network_size),
+                history, output_modules);
+        };
+
+        if (context->stream_cache.empty()) {
+            std::shared_ptr<vda_stream_entry> seed;
+            std::vector<std::shared_ptr<vda_stream_entry>> empty;
+            (void)run(empty, seed);
+            context->stream_cache.assign(32, seed);
+            context->stream_width =
+                static_cast<std::uint32_t>(width);
+            context->stream_height =
+                static_cast<std::uint32_t>(height);
+            context->stream_input_size = network_size;
+        }
+
+        std::vector<std::shared_ptr<vda_stream_entry>> selected;
+        selected.reserve(31);
+        selected.push_back(context->stream_cache[0]);
+        selected.push_back(context->stream_cache[1]);
+        const std::size_t tail =
+            context->stream_cache.size() - 29;
+        selected.insert(
+            selected.end(),
+            context->stream_cache.begin() +
+                static_cast<std::ptrdiff_t>(tail),
+            context->stream_cache.end());
+        std::shared_ptr<vda_stream_entry> current;
+        vda_native::FeatureMap result = run(selected, current);
+        context->stream_cache.push_back(current);
+        ++context->stream_id;
+        if (context->stream_id + 32 > 42) {
+            context->stream_cache.erase(
+                context->stream_cache.begin() + 1);
+        }
+
+        std::vector<float> network_depth(
+            static_cast<std::size_t>(
+                std::uint64_t(network_size) * network_size));
+        context->vulkan->download(
+            result.buffer, network_depth.data(),
+            network_depth.size() * sizeof(float));
+        resize_normalize_stream_depth(
+            network_depth, network_size, depth,
+            static_cast<std::uint32_t>(width),
+            static_cast<std::uint32_t>(height));
+    });
+#endif
 }
 
 }

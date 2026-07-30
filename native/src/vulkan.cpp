@@ -1242,6 +1242,39 @@ void VulkanContext::copy_buffer_raw(
     VkDeviceSize source_offset,
     VkDeviceSize destination_offset,
     VkDeviceSize bytes) {
+    if (batch_command_ != VK_NULL_HANDLE) {
+        const VkMemoryBarrier before{
+            VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            nullptr,
+            VK_ACCESS_MEMORY_WRITE_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT |
+                VK_ACCESS_TRANSFER_WRITE_BIT,
+        };
+        vkCmdPipelineBarrier(
+            batch_command_,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 1, &before, 0, nullptr, 0, nullptr);
+        const VkBufferCopy region{
+            source_offset, destination_offset, bytes};
+        vkCmdCopyBuffer(
+            batch_command_, source, destination, 1, &region);
+        const VkMemoryBarrier after{
+            VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            nullptr,
+            VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_MEMORY_READ_BIT |
+                VK_ACCESS_MEMORY_WRITE_BIT,
+        };
+        vkCmdPipelineBarrier(
+            batch_command_,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0, 1, &after, 0, nullptr, 0, nullptr);
+        batch_has_dispatch_ = true;
+        batch_buffer_access_.clear();
+        return;
+    }
     VkCommandBuffer command = begin_commands();
     const VkBufferCopy region{
         source_offset, destination_offset, bytes};

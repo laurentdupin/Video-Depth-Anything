@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define VDA_ABI_VERSION 2u
+#define VDA_ABI_VERSION 3u
 
 typedef struct vda_context vda_context;
 
@@ -72,6 +72,26 @@ VDA_API vda_status VDA_CALL vda_infer_tensor_f32(
     int32_t height,
     float* depth_thw,
     uint64_t depth_elements);
+
+/*
+ * Stateful single-frame contract used by InferBridge's Python worker.
+ * Input is BGRA8 capture memory. The runtime preserves BGR channel ordering,
+ * performs nearest square resize and ImageNet normalization, advances the
+ * official 32-frame hidden-state cache, then returns min/max-normalized depth
+ * at the source dimensions. This entry point requires a Vulkan context.
+ */
+VDA_API vda_status VDA_CALL vda_infer_stream_bgra8_f32(
+    vda_context* context,
+    const uint8_t* bgra,
+    uint64_t bgra_stride_bytes,
+    int32_t width,
+    int32_t height,
+    int32_t input_size,
+    float* depth_hw,
+    uint64_t depth_elements);
+
+VDA_API vda_status VDA_CALL vda_stream_reset(
+    vda_context* context);
 
 #ifdef __cplusplus
 }

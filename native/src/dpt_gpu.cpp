@@ -292,9 +292,27 @@ FeatureMap VdaGpuDpt::fusion(
 }
 
 FeatureMap VdaGpuDpt::forward(EncoderOutput&& encoded) {
+    return forward_impl(std::move(encoded), nullptr, nullptr);
+}
+
+FeatureMap VdaGpuDpt::forward_stream(
+    EncoderOutput&& encoded,
+    const std::vector<const TemporalFrameCache*> history[4],
+    TemporalFrameCache* output_cache[4]) {
+    return forward_impl(
+        std::move(encoded), history, output_cache);
+}
+
+FeatureMap VdaGpuDpt::forward_impl(
+    EncoderOutput&& encoded,
+    const std::vector<const TemporalFrameCache*>* history,
+    TemporalFrameCache* const* output_cache) {
     if (encoded.features.size() != 4 ||
         encoded.embedding != embedding_ ||
-        encoded.frames == 0) {
+        encoded.frames == 0 ||
+        (history &&
+         (!output_cache || !output_cache[0] || !output_cache[1] ||
+          !output_cache[2] || !output_cache[3]))) {
         throw std::invalid_argument("invalid DPT encoder output");
     }
     if (!convolution_block_selected_) {
@@ -382,8 +400,19 @@ FeatureMap VdaGpuDpt::forward(EncoderOutput&& encoded) {
         context_.batch(run_projections);
     }
     context_.batch([&] {
-        layers[2] = temporal_->forward(0, std::move(layers[2]));
-        layers[3] = temporal_->forward(1, std::move(layers[3]));
+        if (history) {
+            layers[2] = temporal_->forward_stream(
+                0, std::move(layers[2]),
+                history[0], *output_cache[0]);
+            layers[3] = temporal_->forward_stream(
+                1, std::move(layers[3]),
+                history[1], *output_cache[1]);
+        } else {
+            layers[2] =
+                temporal_->forward(0, std::move(layers[2]));
+            layers[3] =
+                temporal_->forward(1, std::move(layers[3]));
+        }
     });
 
     FeatureMap refined[4];
@@ -414,7 +443,11 @@ FeatureMap VdaGpuDpt::forward(EncoderOutput&& encoded) {
             "head.scratch.refinenet4",
             refined[2].width,
             refined[2].height);
-        path = temporal_->forward(2, std::move(path));
+        path = history
+            ? temporal_->forward_stream(
+                2, std::move(path),
+                history[2], *output_cache[2])
+            : temporal_->forward(2, std::move(path));
     });
     context_.batch([&] {
         path = fusion(
@@ -423,7 +456,11 @@ FeatureMap VdaGpuDpt::forward(EncoderOutput&& encoded) {
             "head.scratch.refinenet3",
             refined[1].width,
             refined[1].height);
-        path = temporal_->forward(3, std::move(path));
+        path = history
+            ? temporal_->forward_stream(
+                3, std::move(path),
+                history[3], *output_cache[3])
+            : temporal_->forward(3, std::move(path));
     });
     context_.batch([&] {
         path = fusion(
