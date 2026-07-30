@@ -74,6 +74,7 @@ endif()
 
 add_library(video_depth_anything_native SHARED
     src/vda.cpp
+    src/inferbridge_harness.cpp
     src/model.cpp
     src/encoder_cpu.cpp
     src/temporal_cpu.cpp
@@ -99,7 +100,9 @@ target_include_directories(
     PUBLIC include
     PRIVATE src)
 target_compile_definitions(
-    video_depth_anything_native PRIVATE VDA_BUILD_DLL)
+    video_depth_anything_native PRIVATE
+        VDA_BUILD_DLL
+        INFERBRIDGE_HARNESS_BUILDING_LIBRARY)
 set_target_properties(video_depth_anything_native PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN YES)
@@ -148,6 +151,22 @@ if(BUILD_TESTING)
         vda_c_abi_smoke PRIVATE video_depth_anything_native)
     target_include_directories(vda_c_abi_smoke PRIVATE include)
     add_test(NAME vda_c_abi_smoke COMMAND vda_c_abi_smoke)
+    add_executable(vda_harness_abi_smoke tests/harness_abi_smoke.c)
+    target_link_libraries(
+        vda_harness_abi_smoke PRIVATE video_depth_anything_native)
+    target_include_directories(
+        vda_harness_abi_smoke PRIVATE include)
+    add_test(
+        NAME vda_harness_abi_smoke COMMAND vda_harness_abi_smoke)
+    add_executable(vda_harness_full_graph tests/harness_full_graph.cpp)
+    target_link_libraries(
+        vda_harness_full_graph PRIVATE video_depth_anything_native)
+    target_include_directories(
+        vda_harness_full_graph PRIVATE include)
+    add_test(
+        NAME vda_harness_full_graph COMMAND vda_harness_full_graph)
+    set_tests_properties(
+        vda_harness_full_graph PROPERTIES SKIP_RETURN_CODE 77)
     if(VDA_WITH_VULKAN)
         add_executable(vda_vulkan_smoke
             tests/vulkan_smoke.cpp

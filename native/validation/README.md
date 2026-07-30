@@ -130,3 +130,32 @@ The cache implementation exposed and fixed a Vulkan command-ordering issue:
 buffer copies inside a compute batch now record transfer barriers and the copy
 in that same command buffer instead of submitting ahead of their producers.
 `native/tools/validate_streaming.py` reproduces the stateful comparison.
+
+## Embedded InferBridge harness
+
+The model DLL exports `ibrh_get_api` for InferBridge harness ABI 1.0. The
+single Video Depth Anything Small catalog entry maps its canonical `.pth` to
+the hidden, content-addressed `.vda` representation described above. The
+harness accepts the existing `Encoder=vits` and multiple-of-14 `Size`
+parameters; it rejects unimplemented encoder variants rather than silently
+selecting the wrong graph.
+
+Each host-memory BGRA8 submission advances the model's real temporal cache and
+returns a leased, source-size normalized FP32 depth image with preserved frame
+and timestamp correlation. Submit calls are serialized because stream order
+is semantically significant. `Reset=YES` on a submission resets the cache
+immediately before that frame; model unload/reload also restores initial
+state. An acquired output lease owns its result independently of later stream
+advances and remains valid after job release.
+
+Capability probing reports only host input/output and one synchronous
+in-flight job. The spatial graph, temporal cache, and DPT graph execute on the
+selected Vulkan device, but capture upload and final depth readback remain
+host boundaries. External GPU resources, asynchronous completion, and
+cancellation are not advertised.
+
+The Windows Release harness gate validates model loading, three correlated
+frames, temporal-state progression, explicit reset, normalized output, and
+lease lifetime on the RX 9070. Reset reproduces the first-frame result within
+`1e-6`. The longer Python CPU stream and three-GPU numerical gates remain as
+reported above.
