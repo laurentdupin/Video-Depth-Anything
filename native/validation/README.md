@@ -21,5 +21,23 @@ rejects non-tensors, non-FP32 values, unsupported ranks, long names, and
 invalid lengths. The eventual native DLL will only map `.vda`; it will not
 contain Python or a pickle implementation.
 
-Graph inference and numerical validation are still pending. No native
-inference or GPU capability is advertised by this foundation.
+## Temporal transformer gate
+
+The dependency-free scalar C++ oracle now implements the four learned
+temporal modules: GroupNorm, temporal positional encoding, two eight-head
+self-attention residual blocks, LayerNorm, exact-GELU GEGLU feed-forward,
+input/output projections, and the outer residual.
+
+All four modules were compared at their representative 32-frame decoder
+shapes against PyTorch CPU:
+
+| Module | C x T x H x W | Relative L1 | Maximum absolute |
+|---:|---:|---:|---:|
+| 0 | 192 x 32 x 2 x 2 | 0.0000259% | 0.00000191 |
+| 1 | 384 x 32 x 1 x 1 | 0.0000743% | 0.0000119 |
+| 2 | 64 x 32 x 2 x 2 | 0.0000194% | 0.00000858 |
+| 3 | 64 x 32 x 4 x 4 | 0.0000269% | 0.00000739 |
+
+The raw fixtures are generated locally and excluded from source control.
+The full DINOv2 + temporal DPT graph is still pending. No public inference or
+GPU capability is advertised by this intermediate correctness oracle.

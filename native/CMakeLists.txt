@@ -33,6 +33,15 @@ if(MSVC)
     target_compile_options(vda_model_probe PRIVATE /W4 /permissive-)
 endif()
 
+add_executable(vda_temporal_probe
+    tools/temporal_probe.cpp
+    src/model.cpp
+    src/temporal_cpu.cpp)
+target_include_directories(vda_temporal_probe PRIVATE include src)
+if(MSVC)
+    target_compile_options(vda_temporal_probe PRIVATE /W4 /permissive-)
+endif()
+
 include(CTest)
 if(BUILD_TESTING)
     add_executable(vda_c_abi_smoke tests/c_abi_smoke.c)

@@ -1,3 +1,4 @@
 out/
 *.vda
+*.bin
 __pycache__/
