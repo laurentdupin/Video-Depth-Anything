@@ -38,16 +38,23 @@ layout(push_constant) uniform Parameters {
     uint stride;
     int padding;
     uint has_bias;
+    uint batches;
+    uint output_channel_blocks;
 } parameters;
 
 void main() {
     const uint output_x = gl_GlobalInvocationID.x;
     const uint output_y = gl_GlobalInvocationID.y;
+    const uint batch =
+        gl_GlobalInvocationID.z / parameters.output_channel_blocks;
     const uint output_channel_base =
-        gl_GlobalInvocationID.z * OUTPUT_CHANNEL_BLOCK;
+        (gl_GlobalInvocationID.z %
+            parameters.output_channel_blocks) *
+        OUTPUT_CHANNEL_BLOCK;
     if (output_x >= parameters.output_width ||
         output_y >= parameters.output_height ||
-        output_channel_base >= parameters.output_channels) {
+        output_channel_base >= parameters.output_channels ||
+        batch >= parameters.batches) {
         return;
     }
     float sums[OUTPUT_CHANNEL_BLOCK];
@@ -77,7 +84,8 @@ void main() {
                     continue;
                 }
                 const uint input_index =
-                    (input_channel * parameters.input_height +
+                    ((batch * parameters.input_channels +
+                        input_channel) * parameters.input_height +
                         uint(input_y)) *
                         parameters.input_width +
                     uint(input_x);
@@ -115,7 +123,8 @@ void main() {
                 sum += bias_buffer.data[output_channel];
             }
             output_buffer.data[
-                (output_channel * parameters.output_height + output_y) *
+                ((batch * parameters.output_channels +
+                    output_channel) * parameters.output_height + output_y) *
                     parameters.output_width +
                 output_x] = sum;
         }

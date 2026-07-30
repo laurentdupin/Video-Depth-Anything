@@ -3,6 +3,13 @@
 #include "dpt_cpu.h"
 #include "encoder_cpu.h"
 #include "model.h"
+#if defined(VDA_WITH_VULKAN)
+#include "dpt_gpu.h"
+#include "encoder_gpu.h"
+#include "gpu_model.h"
+#include "operators.h"
+#include "vulkan.h"
+#endif
 
 #include <algorithm>
 #include <memory>
@@ -13,6 +20,13 @@
 
 struct vda_context {
     std::unique_ptr<vda_native::ModelFile> model;
+#if defined(VDA_WITH_VULKAN)
+    std::unique_ptr<vda_native::VulkanContext> vulkan;
+    std::unique_ptr<vda_native::GpuModel> gpu_model;
+    std::unique_ptr<vda_native::VulkanOperators> operators;
+    std::unique_ptr<vda_native::VdaGpuEncoder> encoder;
+    std::unique_ptr<vda_native::VdaGpuDpt> dpt;
+#endif
 };
 
 namespace {
@@ -48,7 +62,7 @@ uint32_t VDA_CALL vda_abi_version(void) {
 }
 
 const char* VDA_CALL vda_version_string(void) {
-    return "0.2.0-cpu-graph";
+    return "0.3.0-cpu-vulkan-full-graph";
 }
 
 const char* VDA_CALL vda_status_string(vda_status status) {
@@ -91,6 +105,57 @@ vda_status VDA_CALL vda_create(
     });
 }
 
+vda_status VDA_CALL vda_create_vulkan(
+    const char* model_path_utf8,
+    vda_model_kind model,
+    uint32_t device_index,
+    vda_context** context) {
+#if !defined(VDA_WITH_VULKAN)
+    (void)model_path_utf8;
+    (void)model;
+    (void)device_index;
+    if (context) {
+        *context = nullptr;
+    }
+    return fail(
+        VDA_STATUS_VULKAN_UNAVAILABLE,
+        "this DLL was built without Vulkan");
+#else
+    if (!context) {
+        return fail(VDA_STATUS_INVALID_ARGUMENT, "context is null");
+    }
+    *context = nullptr;
+    if (!model_path_utf8 || model_path_utf8[0] == '\0' ||
+        model != VDA_MODEL_VITS_RELATIVE_32_FRAMES) {
+        return fail(VDA_STATUS_INVALID_ARGUMENT, "invalid create options");
+    }
+    return protect([&] {
+        auto result = std::make_unique<vda_context>();
+        result->model = std::make_unique<vda_native::ModelFile>(
+            model_path_utf8, model);
+        result->vulkan =
+            std::make_unique<vda_native::VulkanContext>(device_index);
+        result->gpu_model =
+            std::make_unique<vda_native::GpuModel>(
+                *result->model, *result->vulkan);
+        result->operators =
+            std::make_unique<vda_native::VulkanOperators>(
+                *result->vulkan);
+        result->encoder =
+            std::make_unique<vda_native::VdaGpuEncoder>(
+                *result->vulkan,
+                *result->gpu_model,
+                *result->operators);
+        result->dpt =
+            std::make_unique<vda_native::VdaGpuDpt>(
+                *result->vulkan,
+                *result->gpu_model,
+                *result->operators);
+        *context = result.release();
+    });
+#endif
+}
+
 void VDA_CALL vda_destroy(vda_context* context) {
     delete context;
 }
@@ -115,6 +180,31 @@ vda_status VDA_CALL vda_infer_tensor_f32(
             "invalid 32-frame tensor inference input");
     }
     return protect([&] {
+#if defined(VDA_WITH_VULKAN)
+        if (context->dpt) {
+            const std::uint64_t input_elements =
+                std::uint64_t(frames) * 3 * width * height;
+            vda_native::VulkanBuffer image =
+                context->vulkan->create_device_buffer(
+                    input_elements * sizeof(float));
+            context->vulkan->upload(
+                image, normalized_rgb_tchw,
+                input_elements * sizeof(float));
+            vda_native::FeatureMap result =
+                context->dpt->forward(
+                    context->encoder->forward(
+                        image,
+                        static_cast<std::uint32_t>(frames),
+                        static_cast<std::uint32_t>(width),
+                        static_cast<std::uint32_t>(height)));
+            context->vulkan->download(
+                result.buffer,
+                depth_thw,
+                std::uint64_t(frames) * width * height *
+                    sizeof(float));
+            return;
+        }
+#endif
         std::vector<float> result = vda_native::dpt_cpu(
             *context->model,
             vda_native::encoder_cpu(

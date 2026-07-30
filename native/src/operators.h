@@ -45,7 +45,8 @@ public:
         std::uint32_t tokens,
         std::uint32_t heads,
         VulkanBuffer* score_scratch = nullptr,
-        bool half_scores = false);
+        bool half_scores = false,
+        std::uint32_t batches = 1);
 
     void prepare_tokens(
         VulkanBuffer& output,
@@ -56,7 +57,8 @@ public:
         const VulkanBuffer& position,
         std::uint32_t input_width,
         std::uint32_t input_height,
-        std::uint32_t embedding);
+        std::uint32_t embedding,
+        std::uint32_t batches = 1);
 
     void project_tokens(
         VulkanBuffer& output,
@@ -67,7 +69,8 @@ public:
         std::uint32_t height,
         std::uint32_t embedding,
         std::uint32_t output_channels,
-        bool half_weight = false);
+        bool half_weight = false,
+        std::uint32_t batches = 1);
 
     void conv2d(
         VulkanBuffer& output,
@@ -83,7 +86,8 @@ public:
         std::uint32_t padding,
         bool has_bias,
         bool block8 = false,
-        bool half_weight = false);
+        bool half_weight = false,
+        std::uint32_t batches = 1);
 
     void conv_transpose_nonoverlap(
         VulkanBuffer& output,
@@ -95,7 +99,8 @@ public:
         std::uint32_t input_channels,
         std::uint32_t output_channels,
         std::uint32_t kernel,
-        bool half_weight = false);
+        bool half_weight = false,
+        std::uint32_t batches = 1);
 
     void bilinear_align_true(
         VulkanBuffer& output,
@@ -104,7 +109,8 @@ public:
         std::uint32_t input_height,
         std::uint32_t output_width,
         std::uint32_t output_height,
-        std::uint32_t channels);
+        std::uint32_t channels,
+        std::uint32_t batches = 1);
     void bilinear_align_true_image(
         VulkanImage& output,
         const VulkanBuffer& input,

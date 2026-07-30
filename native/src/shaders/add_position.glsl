@@ -20,12 +20,14 @@ layout(push_constant) uniform Parameters {
     uint patch_height;
     uint embedding;
     uint count;
+    uint tokens;
 } parameters;
 
 void main() {
     const uint index = gl_GlobalInvocationID.x;
     if (index >= parameters.count) return;
-    const uint token = index / parameters.embedding;
+    const uint token =
+        (index / parameters.embedding) % parameters.tokens;
     const uint feature = index % parameters.embedding;
     float position;
     if (token == 0) {

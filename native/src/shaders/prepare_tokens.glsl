@@ -23,18 +23,23 @@ layout(push_constant) uniform Parameters {
     uint patch_width;
     uint patch_height;
     uint embedding;
+    uint batches;
 } parameters;
 
 void main() {
     const uint feature = gl_GlobalInvocationID.x;
     const uint token = gl_GlobalInvocationID.y;
+    const uint batch = gl_GlobalInvocationID.z;
     const uint patch_count =
         parameters.patch_width * parameters.patch_height;
-    if (feature >= parameters.embedding || token > patch_count) {
+    if (feature >= parameters.embedding || token > patch_count ||
+        batch >= parameters.batches) {
         return;
     }
+    const uint token_base =
+        batch * (patch_count + 1) * parameters.embedding;
     if (token == 0) {
-        token_output_buffer.data[feature] =
+        token_output_buffer.data[token_base + feature] =
             class_token_buffer.data[feature];
         return;
     }
@@ -49,7 +54,8 @@ void main() {
                 const uint image_x = patch_x * 14 + kernel_x;
                 const uint image_y = patch_y * 14 + kernel_y;
                 const uint image_index =
-                    (channel * parameters.input_height + image_y) *
+                    ((batch * 3 + channel) *
+                        parameters.input_height + image_y) *
                         parameters.input_width +
                     image_x;
                 const uint weight_index =
@@ -60,6 +66,7 @@ void main() {
             }
         }
     }
-    token_output_buffer.data[token * parameters.embedding + feature] =
+    token_output_buffer.data[
+        token_base + token * parameters.embedding + feature] =
         sum + patch_bias_buffer.data[feature];
 }

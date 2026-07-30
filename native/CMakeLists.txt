@@ -64,7 +64,9 @@ if(VDA_WITH_VULKAN)
             elementwise gelu layer_norm linear linear16 linear_half linear16_half
             prepare_tokens position_bicubic project_tokens
             project_tokens_half relu softmax_lastdim
-            softmax_lastdim_half)
+            softmax_lastdim_half temporal_attention temporal_geglu
+            temporal_group_norm temporal_output temporal_position
+            temporal_transpose)
         vda_compile_shader(${SHADER})
     endforeach()
 endif()
@@ -80,6 +82,9 @@ if(VDA_WITH_VULKAN)
         src/vulkan.cpp
         src/operators.cpp
         src/gpu_model.cpp
+        src/encoder_gpu.cpp
+        src/dpt_gpu.cpp
+        src/temporal_gpu.cpp
         ${VDA_SHADER_HEADERS})
     target_include_directories(
         video_depth_anything_native PRIVATE "${VDA_GENERATED_DIR}")
@@ -154,5 +159,34 @@ if(BUILD_TESTING)
             include src "${VDA_GENERATED_DIR}")
         target_link_libraries(vda_vulkan_smoke PRIVATE Vulkan::Vulkan)
         add_test(NAME vda_vulkan_smoke COMMAND vda_vulkan_smoke)
+        add_executable(vda_gpu_encoder_probe
+            tools/gpu_encoder_probe.cpp
+            src/encoder_gpu.cpp
+            src/vulkan.cpp
+            src/operators.cpp
+            src/gpu_model.cpp
+            src/model.cpp
+            ${VDA_SHADER_HEADERS})
+        target_include_directories(vda_gpu_encoder_probe PRIVATE
+            include src "${VDA_GENERATED_DIR}")
+        target_link_libraries(
+            vda_gpu_encoder_probe PRIVATE Vulkan::Vulkan)
+        add_executable(vda_gpu_temporal_probe
+            tools/gpu_temporal_probe.cpp
+            src/temporal_gpu.cpp
+            src/vulkan.cpp
+            src/operators.cpp
+            src/gpu_model.cpp
+            src/model.cpp
+            ${VDA_SHADER_HEADERS})
+        target_include_directories(vda_gpu_temporal_probe PRIVATE
+            include src "${VDA_GENERATED_DIR}")
+        target_link_libraries(
+            vda_gpu_temporal_probe PRIVATE Vulkan::Vulkan)
+        add_executable(
+            vda_gpu_full_graph_probe tools/gpu_full_graph_probe.cpp)
+        target_link_libraries(
+            vda_gpu_full_graph_probe
+            PRIVATE video_depth_anything_native)
     endif()
 endif()

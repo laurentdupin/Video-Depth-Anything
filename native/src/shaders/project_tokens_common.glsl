@@ -32,12 +32,15 @@ layout(push_constant) uniform Parameters {
     uint height;
     uint embedding;
     uint output_channels;
+    uint batches;
 } parameters;
 
 shared float token_tile[32 * 16];
 shared float weight_tile[32 * 16];
 
 void main() {
+    const uint batch = gl_WorkGroupID.z;
+    if (batch >= parameters.batches) return;
     const uint spatial = parameters.width * parameters.height;
     const uint channel_base =
         gl_WorkGroupID.x * 32 + gl_LocalInvocationID.x * 4;
@@ -64,7 +67,10 @@ void main() {
                 output_spatial < spatial &&
                     inner < parameters.embedding
                 ? token_buffer.data[
-                    (output_spatial + 1) * parameters.embedding + inner]
+                    (batch * (spatial + 1) +
+                        output_spatial + 1) *
+                            parameters.embedding +
+                    inner]
                 : 0.0;
         }
         for (uint index = lane; index < 32 * 16; index += 64) {
@@ -109,7 +115,10 @@ void main() {
             const uint output_channel = channel_base + column;
             if (output_channel < parameters.output_channels) {
                 output_buffer.data[
-                    output_channel * spatial + output_spatial] =
+                    (batch * parameters.output_channels +
+                        output_channel) *
+                            spatial +
+                    output_spatial] =
                     sums[row][column] + bias_buffer.data[output_channel];
             }
         }

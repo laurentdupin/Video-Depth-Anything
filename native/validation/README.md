@@ -68,6 +68,37 @@ Deterministic complete-DLL comparisons against PyTorch CPU:
 | 32 x 56 x 56 | 0.0000346% | 0.00000596 | 16.24 s |
 
 These correctness-first results are far inside the 1% requirement and prove
-that different valid spatial sizes execute accurately. The scalar executor is
-an oracle, not the performance backend: official 518-class inference must be
-translated to Vulkan before it is practical. No GPU capability is advertised.
+that different valid spatial sizes execute accurately. The scalar executor
+remains the numerical oracle.
+
+## Full native Vulkan graph
+
+ABI version 2 adds `vda_create_vulkan`. It selects a zero-based Vulkan
+physical-device index and fails if a real Vulkan context cannot be created;
+there is no CPU fallback behind this entry point. The complete graph stays on
+the selected GPU between the input upload and final depth download:
+
+- batched DINOv2 patch embedding and all 12 spatial transformer blocks;
+- bounded encoder frame chunks that cap attention scratch memory and avoid
+  oversized Windows watchdog submissions;
+- all four temporal modules, including GroupNorm, two eight-head attention
+  residuals, exact-GELU GEGLU feed-forward, and layout transforms;
+- all DPT projections, resize layers, refinement blocks, and output head.
+
+Full-graph comparisons against the same PyTorch CPU fixtures:
+
+| GPU | Input | Relative L1 | Maximum absolute |
+|---|---:|---:|---:|
+| Radeon RX 9070 | 32 x 28 x 28 | 0.141551% | 0.034287 |
+| GeForce GTX 1080 | 32 x 28 x 28 | 0.160712% | 0.0374296 |
+| Radeon RX 6700 XT | 32 x 28 x 28 | 0.152964% | 0.0375371 |
+| Radeon RX 9070 | 32 x 56 x 56 | 0.0353831% | 0.00282288 |
+
+Twenty consecutive 32 x 28 x 28 jobs on one persistent RX 9070 context pass
+with a 58.4 ms median. A 32 x 518 x 518 full-graph smoke completes without
+GPU watchdog or allocation failure on all three adapters: 2.61 s on the
+RX 9070, 8.29 s on the GTX 1080, and 3.26 s on the RX 6700 XT.
+
+This first coherent Vulkan API is a host-tensor compatibility path: normalized
+input is uploaded once and final depth is downloaded once. It does not yet
+advertise external texture import or GPU-resident output leasing.

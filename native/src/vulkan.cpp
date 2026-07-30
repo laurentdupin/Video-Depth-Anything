@@ -1236,14 +1236,35 @@ void VulkanContext::cancel_batch() noexcept {
     release_batch_resources();
 }
 
-void VulkanContext::copy_buffer(
+void VulkanContext::copy_buffer_raw(
     VkBuffer source,
     VkBuffer destination,
+    VkDeviceSize source_offset,
+    VkDeviceSize destination_offset,
     VkDeviceSize bytes) {
     VkCommandBuffer command = begin_commands();
-    const VkBufferCopy region{0, 0, bytes};
+    const VkBufferCopy region{
+        source_offset, destination_offset, bytes};
     vkCmdCopyBuffer(command, source, destination, 1, &region);
     end_commands(command);
+}
+
+void VulkanContext::copy(
+    VulkanBuffer& destination,
+    VkDeviceSize destination_offset,
+    const VulkanBuffer& source,
+    VkDeviceSize source_offset,
+    VkDeviceSize bytes) {
+    if (destination.owner_ != this || source.owner_ != this ||
+        destination_offset > destination.size_ ||
+        source_offset > source.size_ ||
+        bytes > destination.size_ - destination_offset ||
+        bytes > source.size_ - source_offset) {
+        throw std::invalid_argument("invalid Vulkan buffer copy");
+    }
+    copy_buffer_raw(
+        source.buffer_, destination.buffer_,
+        source_offset, destination_offset, bytes);
 }
 
 void VulkanContext::upload(
@@ -1258,7 +1279,8 @@ void VulkanContext::upload(
         std::memory_order_relaxed);
     VulkanBuffer staging = create_host_buffer(bytes);
     std::memcpy(staging.mapped_, data, bytes);
-    copy_buffer(staging.buffer_, destination.buffer_, bytes);
+    copy_buffer_raw(
+        staging.buffer_, destination.buffer_, 0, 0, bytes);
 }
 
 void VulkanContext::download(
@@ -1272,7 +1294,8 @@ void VulkanContext::download(
         static_cast<std::uint64_t>(bytes),
         std::memory_order_relaxed);
     VulkanBuffer staging = create_host_buffer(bytes);
-    copy_buffer(source.buffer_, staging.buffer_, bytes);
+    copy_buffer_raw(
+        source.buffer_, staging.buffer_, 0, 0, bytes);
     std::memcpy(data, staging.mapped_, bytes);
 }
 

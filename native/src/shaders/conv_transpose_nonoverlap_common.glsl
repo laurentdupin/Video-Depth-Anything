@@ -33,16 +33,21 @@ layout(push_constant) uniform Parameters {
     uint input_channels;
     uint output_channels;
     uint kernel;
+    uint batches;
 } parameters;
 
 void main() {
     const uint output_x = gl_GlobalInvocationID.x;
     const uint output_y = gl_GlobalInvocationID.y;
-    const uint output_channel = gl_GlobalInvocationID.z;
+    const uint batch =
+        gl_GlobalInvocationID.z / parameters.output_channels;
+    const uint output_channel =
+        gl_GlobalInvocationID.z % parameters.output_channels;
     const uint output_width = parameters.input_width * parameters.kernel;
     const uint output_height = parameters.input_height * parameters.kernel;
     if (output_x >= output_width || output_y >= output_height ||
-        output_channel >= parameters.output_channels) {
+        output_channel >= parameters.output_channels ||
+        batch >= parameters.batches) {
         return;
     }
     const uint input_x = output_x / parameters.kernel;
@@ -54,7 +59,8 @@ void main() {
          input_channel < parameters.input_channels;
          ++input_channel) {
         const uint input_index =
-            (input_channel * parameters.input_height + input_y) *
+            ((batch * parameters.input_channels +
+                input_channel) * parameters.input_height + input_y) *
                 parameters.input_width +
             input_x;
         const uint weight_index =
@@ -68,7 +74,8 @@ void main() {
             read_weight(weight_index);
     }
     output_buffer.data[
-        (output_channel * output_height + output_y) *
+        ((batch * parameters.output_channels +
+            output_channel) * output_height + output_y) *
             output_width +
         output_x] = sum + bias_buffer.data[output_channel];
 }

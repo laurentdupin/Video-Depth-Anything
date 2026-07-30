@@ -85,7 +85,7 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
       add_scaled_(context.create_pipeline(
           vda_add_scaled_spv, vda_add_scaled_spv_size, 4, 8)),
       bmm_(context.create_pipeline(
-          vda_bmm_spv, vda_bmm_spv_size, 3, 36)),
+          vda_bmm_spv, vda_bmm_spv_size, 3, 44)),
       bmm_score_half_(context.create_pipeline(
           vda_bmm_score_half_spv,
           vda_bmm_score_half_spv_size,
@@ -114,7 +114,7 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
           vda_prepare_tokens_spv,
           vda_prepare_tokens_spv_size,
           5,
-          20)),
+          24)),
       position_bicubic_(context.create_pipeline(
           vda_position_bicubic_spv,
           vda_position_bicubic_spv_size,
@@ -130,45 +130,45 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
           vda_add_position_spv,
           vda_add_position_spv_size,
           4,
-          16)),
+          20)),
       add_(context.create_pipeline(
           vda_add_spv, vda_add_spv_size, 3, 4)),
       project_tokens_(context.create_pipeline(
           vda_project_tokens_spv,
           vda_project_tokens_spv_size,
           4,
-          16)),
+          20)),
       project_tokens_half_(context.create_pipeline(
           vda_project_tokens_half_spv,
           vda_project_tokens_half_spv_size,
           4,
-          16)),
+          20)),
       conv2d_(context.create_pipeline(
-          vda_conv2d_spv, vda_conv2d_spv_size, 4, 40)),
+          vda_conv2d_spv, vda_conv2d_spv_size, 4, 48)),
       conv2d8_(context.create_pipeline(
-          vda_conv2d8_spv, vda_conv2d8_spv_size, 4, 40)),
+          vda_conv2d8_spv, vda_conv2d8_spv_size, 4, 48)),
       conv2d_half_(context.create_pipeline(
-          vda_conv2d_half_spv, vda_conv2d_half_spv_size, 4, 40)),
+          vda_conv2d_half_spv, vda_conv2d_half_spv_size, 4, 48)),
       conv2d8_half_(context.create_pipeline(
           vda_conv2d8_half_spv,
           vda_conv2d8_half_spv_size,
           4,
-          40)),
+          48)),
       conv_transpose_nonoverlap_(context.create_pipeline(
           vda_conv_transpose_nonoverlap_spv,
           vda_conv_transpose_nonoverlap_spv_size,
           4,
-          20)),
+          24)),
       conv_transpose_nonoverlap_half_(context.create_pipeline(
           vda_conv_transpose_nonoverlap_half_spv,
           vda_conv_transpose_nonoverlap_half_spv_size,
           4,
-          20)),
+          24)),
       bilinear_align_true_(context.create_pipeline(
           vda_bilinear_align_true_spv,
           vda_bilinear_align_true_spv_size,
           2,
-          20)),
+          24)),
       bilinear_align_true_image_(context.create_pipeline(
           vda_bilinear_align_true_image_spv,
           vda_bilinear_align_true_image_spv_size,
@@ -326,18 +326,23 @@ void VulkanOperators::attention_head64(
     std::uint32_t tokens,
     std::uint32_t heads,
     VulkanBuffer* score_scratch,
-    bool half_scores) {
-    if (tokens == 0 || heads == 0) {
+    bool half_scores,
+    std::uint32_t batches) {
+    if (tokens == 0 || heads == 0 || batches == 0) {
         throw std::invalid_argument("invalid attention dimensions");
     }
+    if (half_scores && batches != 1) {
+        throw std::invalid_argument(
+            "batched half-score attention is not implemented");
+    }
     const std::uint64_t elements =
-        std::uint64_t(tokens) * heads * 64;
+        std::uint64_t(batches) * tokens * heads * 64;
     require_bytes(output, elements, "attention output");
     require_bytes(qkv, elements * 3, "QKV");
     const std::uint64_t score_elements =
-        std::uint64_t(heads) * tokens * tokens;
+        std::uint64_t(batches) * heads * tokens * tokens;
     const std::uint64_t score_bytes = half_scores
-        ? std::uint64_t(heads) * tokens *
+        ? std::uint64_t(batches) * heads * tokens *
             ((std::uint64_t(tokens) + 1) / 2) *
             sizeof(std::uint32_t)
         : score_elements * sizeof(float);
@@ -396,8 +401,11 @@ void VulkanOperators::attention_head64(
         std::uint32_t qkv_embedding;
         std::uint32_t input_qkv_query;
         std::uint32_t weight_qkv_kind;
+        std::uint32_t qkv_heads;
+        std::uint32_t qkv_tokens;
     } score_parameters{
-        tokens, tokens, 64, heads, 0, 0, heads * 64, 1, 1};
+        tokens, tokens, 64, batches * heads, 0, 0,
+        heads * 64, 1, 1, heads, tokens};
     context_.dispatch(
         bmm_,
         {&scores, &qkv, &qkv},
@@ -405,11 +413,11 @@ void VulkanOperators::attention_head64(
         sizeof(score_parameters),
         divide_up(divide_up(tokens, 4), 8),
         divide_up(divide_up(tokens, 8), 8),
-        heads);
+        batches * heads);
     struct SoftmaxParameters {
         std::uint32_t rows;
         std::uint32_t columns;
-    } softmax_parameters{heads * tokens, tokens};
+    } softmax_parameters{batches * heads * tokens, tokens};
     context_.dispatch(
         softmax_lastdim_,
         {&scores, &scores},
@@ -417,7 +425,8 @@ void VulkanOperators::attention_head64(
         sizeof(softmax_parameters),
         softmax_parameters.rows);
     BmmParameters value_parameters{
-        tokens, 64, tokens, heads, 0, 1, heads * 64, 0, 2};
+        tokens, 64, tokens, batches * heads, 0, 1,
+        heads * 64, 0, 2, heads, tokens};
     context_.dispatch(
         bmm_,
         {&output, &scores, &qkv},
@@ -425,7 +434,7 @@ void VulkanOperators::attention_head64(
         sizeof(value_parameters),
         divide_up(divide_up(64, 4), 8),
         divide_up(divide_up(tokens, 8), 8),
-        heads);
+        batches * heads);
 }
 
 void VulkanOperators::prepare_tokens(
@@ -437,10 +446,11 @@ void VulkanOperators::prepare_tokens(
     const VulkanBuffer& position,
     std::uint32_t input_width,
     std::uint32_t input_height,
-    std::uint32_t embedding) {
+    std::uint32_t embedding,
+    std::uint32_t batches) {
     if (input_width == 0 || input_height == 0 ||
         input_width % 14 != 0 || input_height % 14 != 0 ||
-        embedding == 0) {
+        embedding == 0 || batches == 0) {
         throw std::invalid_argument("invalid patch embedding dimensions");
     }
     const std::uint32_t patch_width = input_width / 14;
@@ -448,7 +458,9 @@ void VulkanOperators::prepare_tokens(
     const std::uint64_t tokens =
         std::uint64_t(patch_width) * patch_height + 1;
     require_bytes(
-        image, std::uint64_t(input_width) * input_height * 3, "image");
+        image,
+        std::uint64_t(batches) * input_width * input_height * 3,
+        "image");
     require_bytes(
         patch_weight, std::uint64_t(embedding) * 3 * 14 * 14,
         "patch weight");
@@ -456,19 +468,23 @@ void VulkanOperators::prepare_tokens(
     require_bytes(class_token, embedding, "class token");
     require_bytes(
         position, std::uint64_t(1370) * embedding, "position");
-    require_bytes(output, tokens * embedding, "token output");
+    require_bytes(
+        output, std::uint64_t(batches) * tokens * embedding,
+        "token output");
     struct Parameters {
         std::uint32_t input_width;
         std::uint32_t input_height;
         std::uint32_t patch_width;
         std::uint32_t patch_height;
         std::uint32_t embedding;
+        std::uint32_t batches;
     } parameters{
         input_width,
         input_height,
         patch_width,
         patch_height,
         embedding,
+        batches,
     };
     VulkanBuffer interpolated =
         context_.create_device_buffer(tokens * embedding * sizeof(float));
@@ -484,7 +500,8 @@ void VulkanOperators::prepare_tokens(
         &parameters,
         sizeof(parameters),
         divide_up(embedding, 8),
-        divide_up(static_cast<std::uint32_t>(tokens), 8));
+        divide_up(static_cast<std::uint32_t>(tokens), 8),
+        batches);
     struct BufferMetadata {
         std::uint32_t logical_sizes[4];
         std::uint32_t logical_strides[4];
@@ -556,11 +573,14 @@ void VulkanOperators::prepare_tokens(
         std::uint32_t patch_height;
         std::uint32_t embedding;
         std::uint32_t count;
+        std::uint32_t tokens;
     } add_parameters{
         patch_width,
         patch_height,
         embedding,
-        static_cast<std::uint32_t>(tokens * embedding),
+        static_cast<std::uint32_t>(
+            std::uint64_t(batches) * tokens * embedding),
+        static_cast<std::uint32_t>(tokens),
     };
     context_.dispatch(
         add_position_,
@@ -579,14 +599,16 @@ void VulkanOperators::project_tokens(
     std::uint32_t height,
     std::uint32_t embedding,
     std::uint32_t output_channels,
-    bool half_weight) {
+    bool half_weight,
+    std::uint32_t batches) {
     if (width == 0 || height == 0 || embedding == 0 ||
-        output_channels == 0) {
+        output_channels == 0 || batches == 0) {
         throw std::invalid_argument("invalid token projection dimensions");
     }
     require_bytes(
         tokens,
-        (std::uint64_t(width) * height + 1) * embedding,
+        std::uint64_t(batches) *
+            (std::uint64_t(width) * height + 1) * embedding,
         "tokens");
     const std::uint64_t weight_elements =
         std::uint64_t(output_channels) * embedding;
@@ -598,21 +620,24 @@ void VulkanOperators::project_tokens(
     require_bytes(bias, output_channels, "bias");
     require_bytes(
         output,
-        std::uint64_t(width) * height * output_channels,
+        std::uint64_t(batches) * width * height * output_channels,
         "output");
     struct Parameters {
         std::uint32_t width;
         std::uint32_t height;
         std::uint32_t embedding;
         std::uint32_t output_channels;
-    } parameters{width, height, embedding, output_channels};
+        std::uint32_t batches;
+    } parameters{
+        width, height, embedding, output_channels, batches};
     context_.dispatch(
         half_weight ? project_tokens_half_ : project_tokens_,
         {&output, &tokens, &weight, &bias},
         &parameters,
         sizeof(parameters),
         divide_up(output_channels, 32),
-        divide_up(width * height, 32));
+        divide_up(width * height, 32),
+        batches);
 }
 
 void VulkanOperators::conv2d(
@@ -629,11 +654,13 @@ void VulkanOperators::conv2d(
     std::uint32_t padding,
     bool has_bias,
     bool block8,
-    bool half_weight) {
+    bool half_weight,
+    std::uint32_t batches) {
     if (input_width == 0 || input_height == 0 || input_channels == 0 ||
         output_channels == 0 || kernel == 0 || stride == 0 ||
         input_width + 2 * padding < kernel ||
-        input_height + 2 * padding < kernel) {
+        input_height + 2 * padding < kernel ||
+        batches == 0) {
         throw std::invalid_argument("invalid convolution dimensions");
     }
     const std::uint32_t output_width =
@@ -642,7 +669,8 @@ void VulkanOperators::conv2d(
         (input_height + 2 * padding - kernel) / stride + 1;
     require_bytes(
         input,
-        std::uint64_t(input_width) * input_height * input_channels,
+        std::uint64_t(batches) * input_width *
+            input_height * input_channels,
         "convolution input");
     const std::uint64_t weight_elements =
         std::uint64_t(output_channels) * input_channels * kernel * kernel;
@@ -655,7 +683,8 @@ void VulkanOperators::conv2d(
     require_bytes(bias, has_bias ? output_channels : 1, "convolution bias");
     require_bytes(
         output,
-        std::uint64_t(output_width) * output_height * output_channels,
+        std::uint64_t(batches) * output_width *
+            output_height * output_channels,
         "convolution output");
     struct Parameters {
         std::uint32_t input_width;
@@ -668,11 +697,17 @@ void VulkanOperators::conv2d(
         std::uint32_t stride;
         std::int32_t padding;
         std::uint32_t has_bias;
-    } parameters{
+        std::uint32_t batches;
+        std::uint32_t output_channel_blocks;
+    };
+    const std::uint32_t output_channel_blocks =
+        divide_up(output_channels, block8 ? 8 : 4);
+    const Parameters parameters{
         input_width, input_height, input_channels,
         output_width, output_height, output_channels,
         kernel, stride, static_cast<std::int32_t>(padding),
         has_bias ? 1u : 0u,
+        batches, output_channel_blocks,
     };
     context_.dispatch(
         half_weight
@@ -683,7 +718,7 @@ void VulkanOperators::conv2d(
         sizeof(parameters),
         divide_up(output_width, 8),
         divide_up(output_height, 8),
-        divide_up(output_channels, block8 ? 8 : 4));
+        output_channel_blocks * batches);
 }
 
 void VulkanOperators::conv_transpose_nonoverlap(
@@ -696,16 +731,18 @@ void VulkanOperators::conv_transpose_nonoverlap(
     std::uint32_t input_channels,
     std::uint32_t output_channels,
     std::uint32_t kernel,
-    bool half_weight) {
+    bool half_weight,
+    std::uint32_t batches) {
     if (input_width == 0 || input_height == 0 || input_channels == 0 ||
-        output_channels == 0 || kernel == 0) {
+        output_channels == 0 || kernel == 0 || batches == 0) {
         throw std::invalid_argument("invalid transposed convolution dimensions");
     }
     const std::uint32_t output_width = input_width * kernel;
     const std::uint32_t output_height = input_height * kernel;
     require_bytes(
         input,
-        std::uint64_t(input_width) * input_height * input_channels,
+        std::uint64_t(batches) * input_width *
+            input_height * input_channels,
         "transposed convolution input");
     const std::uint64_t weight_elements =
         std::uint64_t(input_channels) * output_channels * kernel * kernel;
@@ -719,7 +756,8 @@ void VulkanOperators::conv_transpose_nonoverlap(
     require_bytes(bias, output_channels, "transposed convolution bias");
     require_bytes(
         output,
-        std::uint64_t(output_width) * output_height * output_channels,
+        std::uint64_t(batches) * output_width *
+            output_height * output_channels,
         "transposed convolution output");
     struct Parameters {
         std::uint32_t input_width;
@@ -727,8 +765,10 @@ void VulkanOperators::conv_transpose_nonoverlap(
         std::uint32_t input_channels;
         std::uint32_t output_channels;
         std::uint32_t kernel;
+        std::uint32_t batches;
     } parameters{
-        input_width, input_height, input_channels, output_channels, kernel};
+        input_width, input_height, input_channels,
+        output_channels, kernel, batches};
     context_.dispatch(
         half_weight
             ? conv_transpose_nonoverlap_half_
@@ -738,7 +778,7 @@ void VulkanOperators::conv_transpose_nonoverlap(
         sizeof(parameters),
         divide_up(output_width, 8),
         divide_up(output_height, 8),
-        output_channels);
+        output_channels * batches);
 }
 
 void VulkanOperators::bilinear_align_true(
@@ -748,16 +788,21 @@ void VulkanOperators::bilinear_align_true(
     std::uint32_t input_height,
     std::uint32_t output_width,
     std::uint32_t output_height,
-    std::uint32_t channels) {
+    std::uint32_t channels,
+    std::uint32_t batches) {
     if (input_width == 0 || input_height == 0 || output_width == 0 ||
-        output_height == 0 || channels == 0) {
+        output_height == 0 || channels == 0 || batches == 0) {
         throw std::invalid_argument("invalid bilinear dimensions");
     }
     require_bytes(
-        input, std::uint64_t(input_width) * input_height * channels,
+        input,
+        std::uint64_t(batches) * input_width *
+            input_height * channels,
         "bilinear input");
     require_bytes(
-        output, std::uint64_t(output_width) * output_height * channels,
+        output,
+        std::uint64_t(batches) * output_width *
+            output_height * channels,
         "bilinear output");
     struct Parameters {
         std::uint32_t input_width;
@@ -765,8 +810,10 @@ void VulkanOperators::bilinear_align_true(
         std::uint32_t output_width;
         std::uint32_t output_height;
         std::uint32_t channels;
+        std::uint32_t batches;
     } parameters{
-        input_width, input_height, output_width, output_height, channels};
+        input_width, input_height, output_width, output_height,
+        channels, batches};
     context_.dispatch(
         bilinear_align_true_,
         {&output, &input},
@@ -774,7 +821,7 @@ void VulkanOperators::bilinear_align_true(
         sizeof(parameters),
         divide_up(output_width, 8),
         divide_up(output_height, 8),
-        channels);
+        channels * batches);
 }
 
 void VulkanOperators::bilinear_align_true_image(

@@ -205,6 +205,12 @@ public:
         const VulkanBuffer& source,
         void* data,
         std::size_t bytes);
+    void copy(
+        VulkanBuffer& destination,
+        VkDeviceSize destination_offset,
+        const VulkanBuffer& source,
+        VkDeviceSize source_offset,
+        VkDeviceSize bytes);
     void transfer_counters(
         std::uint64_t& upload_bytes,
         std::uint64_t& download_bytes) const;
@@ -322,9 +328,11 @@ private:
         VkDeviceSize bytes,
         VkBufferUsageFlags usage,
         VkMemoryPropertyFlags properties);
-    void copy_buffer(
+    void copy_buffer_raw(
         VkBuffer source,
         VkBuffer destination,
+        VkDeviceSize source_offset,
+        VkDeviceSize destination_offset,
         VkDeviceSize bytes);
     VkCommandBuffer begin_commands();
     VulkanSubmission submit_commands(

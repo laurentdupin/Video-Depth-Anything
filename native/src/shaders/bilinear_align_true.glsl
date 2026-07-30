@@ -15,11 +15,13 @@ layout(push_constant) uniform Parameters {
     uint output_width;
     uint output_height;
     uint channels;
+    uint batches;
 } parameters;
 
-float read_value(uint x, uint y, uint channel) {
+float read_value(uint x, uint y, uint batch, uint channel) {
     return input_buffer.data[
-        (channel * parameters.input_height + y) *
+        ((batch * parameters.channels + channel) *
+            parameters.input_height + y) *
             parameters.input_width +
         x];
 }
@@ -27,10 +29,12 @@ float read_value(uint x, uint y, uint channel) {
 void main() {
     const uint output_x = gl_GlobalInvocationID.x;
     const uint output_y = gl_GlobalInvocationID.y;
-    const uint channel = gl_GlobalInvocationID.z;
+    const uint batch = gl_GlobalInvocationID.z / parameters.channels;
+    const uint channel = gl_GlobalInvocationID.z % parameters.channels;
     if (output_x >= parameters.output_width ||
         output_y >= parameters.output_height ||
-        channel >= parameters.channels) {
+        channel >= parameters.channels ||
+        batch >= parameters.batches) {
         return;
     }
     const float source_x = parameters.output_width > 1
@@ -50,13 +54,14 @@ void main() {
     const float x_fraction = source_x - float(x0);
     const float y_fraction = source_y - float(y0);
     const float top =
-        read_value(x0, y0, channel) * (1.0 - x_fraction) +
-        read_value(x1, y0, channel) * x_fraction;
+        read_value(x0, y0, batch, channel) * (1.0 - x_fraction) +
+        read_value(x1, y0, batch, channel) * x_fraction;
     const float bottom =
-        read_value(x0, y1, channel) * (1.0 - x_fraction) +
-        read_value(x1, y1, channel) * x_fraction;
+        read_value(x0, y1, batch, channel) * (1.0 - x_fraction) +
+        read_value(x1, y1, batch, channel) * x_fraction;
     output_buffer.data[
-        (channel * parameters.output_height + output_y) *
+        ((batch * parameters.channels + channel) *
+            parameters.output_height + output_y) *
             parameters.output_width +
         output_x] =
         top * (1.0 - y_fraction) + bottom * y_fraction;

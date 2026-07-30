@@ -22,6 +22,8 @@ layout(push_constant) uniform Parameters {
     uint qkv_embedding;
     uint input_qkv_query;
     uint weight_qkv_kind;
+    uint qkv_heads;
+    uint qkv_tokens;
 } parameters;
 
 shared float input_tile[64 * 16];
@@ -33,6 +35,12 @@ void main() {
     const uint row_base =
         gl_WorkGroupID.y * 64 + gl_LocalInvocationID.y * 8;
     const uint batch = gl_GlobalInvocationID.z;
+    const uint qkv_head = parameters.qkv_heads == 0
+        ? batch
+        : batch % parameters.qkv_heads;
+    const uint qkv_frame = parameters.qkv_heads == 0
+        ? 0
+        : batch / parameters.qkv_heads;
     float sums[8][4];
     for (uint row = 0; row < 8; ++row) {
         for (uint column = 0; column < 4; ++column) {
@@ -56,8 +64,10 @@ void main() {
                 if (parameters.input_qkv_query != 0) {
                     precise float scaled_query =
                         input_buffer.data[
-                            output_row * parameters.qkv_embedding * 3 +
-                            batch * 64 + inner] * 0.125;
+                            (qkv_frame * parameters.qkv_tokens +
+                                output_row) *
+                                    parameters.qkv_embedding * 3 +
+                            qkv_head * 64 + inner] * 0.125;
                     input_tile[index] = scaled_query;
                 } else {
                     input_tile[index] = input_buffer.data[
@@ -86,10 +96,11 @@ void main() {
                         ? inner
                         : output_column;
                     weight_tile[index] = weight_buffer.data[
-                        token * parameters.qkv_embedding * 3 +
+                        (qkv_frame * parameters.qkv_tokens + token) *
+                            parameters.qkv_embedding * 3 +
                         parameters.weight_qkv_kind *
                             parameters.qkv_embedding +
-                        batch * 64 + feature];
+                        qkv_head * 64 + feature];
                 } else {
                     weight_tile[index] =
                         parameters.weight_transposed != 0
@@ -134,9 +145,14 @@ void main() {
             const uint output_column = column_base + column;
             if (output_column < parameters.columns) {
                 const uint output_index =
-                    parameters.output_token_major != 0
+                    parameters.output_token_major != 0 &&
+                        parameters.qkv_heads != 0
+                    ? ((qkv_frame * parameters.qkv_tokens + output_row) *
+                          parameters.qkv_embedding +
+                        qkv_head * 64 + output_column)
+                    : parameters.output_token_major != 0
                     ? (output_row * parameters.batches + batch) *
-                          parameters.columns + output_column
+                        parameters.columns + output_column
                     : (batch * parameters.rows + output_row) *
                           parameters.columns + output_column;
                 output_buffer.data[output_index] = sums[row][column];

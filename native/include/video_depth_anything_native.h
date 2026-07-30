@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define VDA_ABI_VERSION 1u
+#define VDA_ABI_VERSION 2u
 
 typedef struct vda_context vda_context;
 
@@ -47,6 +47,16 @@ VDA_API const char* VDA_CALL vda_last_error(void);
 VDA_API vda_status VDA_CALL vda_create(
     const char* model_path_utf8,
     vda_model_kind model,
+    vda_context** context);
+/*
+ * Creates a Vulkan tensor context on the zero-based Vulkan physical-device
+ * index. This is a real full-graph GPU backend; creation fails instead of
+ * silently falling back to CPU.
+ */
+VDA_API vda_status VDA_CALL vda_create_vulkan(
+    const char* model_path_utf8,
+    vda_model_kind model,
+    uint32_t device_index,
     vda_context** context);
 VDA_API void VDA_CALL vda_destroy(vda_context* context);
 /*
