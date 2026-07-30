@@ -14,12 +14,80 @@ if(MSVC)
         "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
+option(VDA_WITH_VULKAN
+    "Build the dependency-free Vulkan executor" ON)
+
+if(VDA_WITH_VULKAN)
+    find_package(Vulkan REQUIRED COMPONENTS glslc)
+    set(VDA_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    file(MAKE_DIRECTORY "${VDA_GENERATED_DIR}")
+
+    function(vda_compile_shader NAME)
+        set(SOURCE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/${NAME}.glsl")
+        set(SPIRV "${VDA_GENERATED_DIR}/${NAME}.spv")
+        set(HEADER "${VDA_GENERATED_DIR}/${NAME}_spv.h")
+        add_custom_command(
+            OUTPUT "${SPIRV}"
+            COMMAND Vulkan::glslc -fshader-stage=compute
+                --target-env=vulkan1.3 --target-spv=spv1.6 -Werror
+                "-I${CMAKE_CURRENT_SOURCE_DIR}/src/shaders"
+                -o "${SPIRV}" "${SOURCE}"
+            DEPENDS
+                "${SOURCE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/indexing.h"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/conv2d_common.glsl"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/linear_common.glsl"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/project_tokens_common.glsl"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/conv_transpose_nonoverlap_common.glsl"
+            VERBATIM)
+        add_custom_command(
+            OUTPUT "${HEADER}"
+            COMMAND "${CMAKE_COMMAND}"
+                "-DINPUT=${SPIRV}"
+                "-DOUTPUT=${HEADER}"
+                "-DVARIABLE=vda_${NAME}_spv"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_binary.cmake"
+            DEPENDS
+                "${SPIRV}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_binary.cmake"
+            VERBATIM)
+        set(VDA_SHADER_HEADERS
+            ${VDA_SHADER_HEADERS} "${HEADER}" PARENT_SCOPE)
+    endfunction()
+
+    foreach(SHADER
+            add_scaled add add_position bilinear_align_true
+            bilinear_align_true_image bmm bmm_score_half
+            bmm_value_half conv2d conv2d8 conv2d_half conv2d8_half
+            conv_transpose_nonoverlap conv_transpose_nonoverlap_half
+            elementwise gelu layer_norm linear linear16 linear_half linear16_half
+            prepare_tokens position_bicubic project_tokens
+            project_tokens_half relu softmax_lastdim
+            softmax_lastdim_half)
+        vda_compile_shader(${SHADER})
+    endforeach()
+endif()
+
 add_library(video_depth_anything_native SHARED
     src/vda.cpp
     src/model.cpp
     src/encoder_cpu.cpp
     src/temporal_cpu.cpp
     src/dpt_cpu.cpp)
+if(VDA_WITH_VULKAN)
+    target_sources(video_depth_anything_native PRIVATE
+        src/vulkan.cpp
+        src/operators.cpp
+        src/gpu_model.cpp
+        ${VDA_SHADER_HEADERS})
+    target_include_directories(
+        video_depth_anything_native PRIVATE "${VDA_GENERATED_DIR}")
+    target_link_libraries(
+        video_depth_anything_native PRIVATE Vulkan::Vulkan)
+    target_compile_definitions(
+        video_depth_anything_native PRIVATE VDA_WITH_VULKAN=1)
+endif()
 target_include_directories(
     video_depth_anything_native
     PUBLIC include
@@ -74,4 +142,17 @@ if(BUILD_TESTING)
         vda_c_abi_smoke PRIVATE video_depth_anything_native)
     target_include_directories(vda_c_abi_smoke PRIVATE include)
     add_test(NAME vda_c_abi_smoke COMMAND vda_c_abi_smoke)
+    if(VDA_WITH_VULKAN)
+        add_executable(vda_vulkan_smoke
+            tests/vulkan_smoke.cpp
+            src/vulkan.cpp
+            src/operators.cpp
+            src/gpu_model.cpp
+            src/model.cpp
+            ${VDA_SHADER_HEADERS})
+        target_include_directories(vda_vulkan_smoke PRIVATE
+            include src "${VDA_GENERATED_DIR}")
+        target_link_libraries(vda_vulkan_smoke PRIVATE Vulkan::Vulkan)
+        add_test(NAME vda_vulkan_smoke COMMAND vda_vulkan_smoke)
+    endif()
 endif()

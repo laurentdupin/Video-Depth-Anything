@@ -44,6 +44,9 @@ public:
     const TensorView& tensor(std::string_view name) const;
     bool contains(std::string_view name) const;
     std::size_t tensor_count() const { return tensors_.size(); }
+    const std::vector<std::string_view>& tensor_names() const {
+        return tensor_names_;
+    }
     const ModelDerivation& derivation() const { return derivation_; }
 
 private:
@@ -58,6 +61,7 @@ private:
     const std::byte* view_ = nullptr;
     std::uint64_t size_ = 0;
     std::unordered_map<std::string_view, TensorView> tensors_;
+    std::vector<std::string_view> tensor_names_;
     ModelDerivation derivation_;
 };
 

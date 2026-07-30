@@ -257,6 +257,7 @@ ModelFile::ModelFile(
             if (!tensors_.emplace(name, tensor).second) {
                 throw std::runtime_error("duplicate VDA tensor name");
             }
+            tensor_names_.push_back(name);
         }
     } catch (...) {
         close();
