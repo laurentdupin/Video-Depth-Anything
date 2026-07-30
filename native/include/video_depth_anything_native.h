@@ -44,6 +44,24 @@ VDA_API uint32_t VDA_CALL vda_abi_version(void);
 VDA_API const char* VDA_CALL vda_version_string(void);
 VDA_API const char* VDA_CALL vda_status_string(vda_status status);
 VDA_API const char* VDA_CALL vda_last_error(void);
+VDA_API vda_status VDA_CALL vda_create(
+    const char* model_path_utf8,
+    vda_model_kind model,
+    vda_context** context);
+VDA_API void VDA_CALL vda_destroy(vda_context* context);
+/*
+ * Executes the official 32-frame graph. Input is normalized RGB FP32 in
+ * contiguous TCHW order. Output is contiguous THW relative depth.
+ * Width and height must be positive multiples of 14.
+ */
+VDA_API vda_status VDA_CALL vda_infer_tensor_f32(
+    vda_context* context,
+    const float* normalized_rgb_tchw,
+    int32_t frames,
+    int32_t width,
+    int32_t height,
+    float* depth_thw,
+    uint64_t depth_elements);
 
 #ifdef __cplusplus
 }

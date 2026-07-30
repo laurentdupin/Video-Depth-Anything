@@ -52,6 +52,22 @@ For a deterministic 28x28 tensor, the prepared tokens match PyTorch CPU at
 `3.13e-6` relative L1 (`0.000313%`) with maximum absolute error
 `0.0000725`.
 
-The remaining correctness step is connecting the proven spatial encoder and
-temporal modules through the DPT convolution/refinement graph. No public
-inference or GPU capability is advertised by these intermediate oracles.
+## Full native CPU graph
+
+The dependency-free DLL now connects the encoder and all four temporal
+modules through the complete DPT projection, transpose-convolution,
+refinement, align-corners bilinear, and depth head. Its public tensor API
+accepts the official 32-frame normalized RGB TCHW input and returns THW
+relative depth for spatial dimensions that are multiples of 14.
+
+Deterministic complete-DLL comparisons against PyTorch CPU:
+
+| Input | Relative L1 | Maximum absolute | Scalar native time |
+|---:|---:|---:|---:|
+| 32 x 28 x 28 | 0.0000457% | 0.00000548 | 4.07 s |
+| 32 x 56 x 56 | 0.0000346% | 0.00000596 | 16.24 s |
+
+These correctness-first results are far inside the 1% requirement and prove
+that different valid spatial sizes execute accurately. The scalar executor is
+an oracle, not the performance backend: official 518-class inference must be
+translated to Vulkan before it is practical. No GPU capability is advertised.

@@ -14,9 +14,16 @@ if(MSVC)
         "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-add_library(video_depth_anything_native SHARED src/vda.cpp)
+add_library(video_depth_anything_native SHARED
+    src/vda.cpp
+    src/model.cpp
+    src/encoder_cpu.cpp
+    src/temporal_cpu.cpp
+    src/dpt_cpu.cpp)
 target_include_directories(
-    video_depth_anything_native PUBLIC include)
+    video_depth_anything_native
+    PUBLIC include
+    PRIVATE src)
 target_compile_definitions(
     video_depth_anything_native PRIVATE VDA_BUILD_DLL)
 set_target_properties(video_depth_anything_native PROPERTIES
@@ -49,6 +56,15 @@ add_executable(vda_encoder_probe
 target_include_directories(vda_encoder_probe PRIVATE include src)
 if(MSVC)
     target_compile_options(vda_encoder_probe PRIVATE /W4 /permissive-)
+endif()
+
+add_executable(vda_full_graph_probe
+    tools/full_graph_probe.cpp)
+target_link_libraries(
+    vda_full_graph_probe PRIVATE video_depth_anything_native)
+target_include_directories(vda_full_graph_probe PRIVATE include)
+if(MSVC)
+    target_compile_options(vda_full_graph_probe PRIVATE /W4 /permissive-)
 endif()
 
 include(CTest)
