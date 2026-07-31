@@ -37,7 +37,11 @@ if(VDA_WITH_VULKAN)
                 "${SOURCE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/indexing.h"
                 "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/conv2d_common.glsl"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/conv2d_pointwise_gemm_common.glsl"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/conv2d_tiled_common.glsl"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/conv2d_implicit_gemm_common.glsl"
                 "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/linear_common.glsl"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/linear_vec4_common.glsl"
                 "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/project_tokens_common.glsl"
                 "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/conv_transpose_nonoverlap_common.glsl"
             VERBATIM)
@@ -60,8 +64,13 @@ if(VDA_WITH_VULKAN)
             add_scaled add add_position bilinear_align_true
             bilinear_align_true_image bmm bmm_score_half
             bmm_value_half conv2d conv2d8 conv2d_half conv2d8_half
+            conv2d_pointwise_gemm conv2d_pointwise_gemm_half
+            conv2d8_tiled16x8 conv2d8_tiled16x8_half
+            conv2d_implicit_gemm conv2d_implicit_gemm_half
             conv_transpose_nonoverlap conv_transpose_nonoverlap_half
             elementwise gelu layer_norm linear linear16 linear_half linear16_half
+            linear_vec4 linear_vec4_half linear_vec8 linear_vec8_half
+            linear_vec16 linear_vec16_half
             prepare_tokens position_bicubic project_tokens
             project_tokens_half relu softmax_lastdim
             softmax_lastdim_half temporal_attention

@@ -133,6 +133,12 @@ private:
     VulkanPipeline linear16_;
     VulkanPipeline linear_half_;
     VulkanPipeline linear16_half_;
+    VulkanPipeline linear_vec4_;
+    VulkanPipeline linear_vec4_half_;
+    VulkanPipeline linear_vec8_;
+    VulkanPipeline linear_vec8_half_;
+    VulkanPipeline linear_vec16_;
+    VulkanPipeline linear_vec16_half_;
     VulkanPipeline gelu_;
     VulkanPipeline layer_norm_;
     VulkanPipeline add_scaled_;
@@ -151,6 +157,12 @@ private:
     VulkanPipeline conv2d8_;
     VulkanPipeline conv2d_half_;
     VulkanPipeline conv2d8_half_;
+    VulkanPipeline conv2d_pointwise_gemm_;
+    VulkanPipeline conv2d_pointwise_gemm_half_;
+    VulkanPipeline conv2d8_tiled16x8_;
+    VulkanPipeline conv2d8_tiled16x8_half_;
+    VulkanPipeline conv2d_implicit_gemm_;
+    VulkanPipeline conv2d_implicit_gemm_half_;
     VulkanPipeline conv_transpose_nonoverlap_;
     VulkanPipeline conv_transpose_nonoverlap_half_;
     VulkanPipeline bilinear_align_true_;
