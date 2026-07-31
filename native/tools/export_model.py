@@ -25,7 +25,14 @@ DTYPE_FLOAT32 = 1
 HEADER = struct.Struct("<8sIIIIQQQQQ")
 RECORD = struct.Struct("<112sII4QQQQIIQ")
 ALIGNMENT = 64
-MODELS = {"video_depth_anything_vits": 0}
+MODELS = {
+    "video_depth_anything_vits": 0,
+    "video_depth_anything_vitb": 1,
+    "video_depth_anything_vitl": 2,
+    "metric_video_depth_anything_vits": 3,
+    "metric_video_depth_anything_vitb": 4,
+    "metric_video_depth_anything_vitl": 5,
+}
 METADATA_MAGIC = b"VDAMETA1"
 METADATA_VERSION = 1
 CONVERTER_ID = "vda-export-pytorch-weights-v1"

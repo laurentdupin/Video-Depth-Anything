@@ -28,7 +28,8 @@ public:
     VdaGpuDpt(
         VulkanContext& context,
         GpuModel& weights,
-        VulkanOperators& operators);
+        VulkanOperators& operators,
+        const ModelConfig& config);
     ~VdaGpuDpt();
 
     FeatureMap forward(EncoderOutput&& encoded);

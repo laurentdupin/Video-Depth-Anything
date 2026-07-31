@@ -1,4 +1,5 @@
 #include "dpt_cpu.h"
+#include "model_config.h"
 
 #include "temporal_cpu.h"
 
@@ -373,12 +374,12 @@ Feature apply_temporal(
 std::vector<float> dpt_cpu(
     const ModelFile& model,
     EncoderCpuOutput&& encoded) {
+    const ModelConfig& config = model_config(model.model_kind());
     if (encoded.features.size() != 4 ||
-        encoded.embedding != 384 ||
+        encoded.embedding != config.embedding ||
         encoded.frames == 0) {
         throw std::invalid_argument("invalid CPU DPT encoder output");
     }
-    const std::uint32_t project_channels[4] = {48, 96, 192, 384};
     Feature layers[4];
     for (std::uint32_t index = 0; index < 4; ++index) {
         Feature tokens{
@@ -418,7 +419,7 @@ std::vector<float> dpt_cpu(
         layers[index] = conv(
             model, tokens, project + ".weight",
             project + ".bias", 1, 0);
-        if (layers[index].channels != project_channels[index]) {
+        if (layers[index].channels != config.project_channels[index]) {
             throw std::runtime_error("DPT project channel mismatch");
         }
         if (index == 0) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu_model.h"
+#include "model_config.h"
 #include "operators.h"
 #include "vulkan.h"
 
@@ -25,7 +26,8 @@ public:
     VdaGpuEncoder(
         VulkanContext& context,
         GpuModel& weights,
-        VulkanOperators& operators);
+        VulkanOperators& operators,
+        const ModelConfig& config);
 
     EncoderOutput forward(
         const VulkanBuffer& image,

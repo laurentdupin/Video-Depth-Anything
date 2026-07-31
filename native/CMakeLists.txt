@@ -77,7 +77,7 @@ if(VDA_WITH_VULKAN)
             temporal_attention_stream temporal_geglu
             temporal_group_norm temporal_output temporal_position
             temporal_transpose preprocess_texture resize_depth
-            reduce_minmax normalize_depth_image)
+            reduce_minmax normalize_depth_image copy_depth_image)
         vda_compile_shader(${SHADER})
     endforeach()
 endif()

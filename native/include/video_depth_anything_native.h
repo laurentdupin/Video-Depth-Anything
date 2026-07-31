@@ -37,7 +37,12 @@ typedef enum vda_status {
 } vda_status;
 
 typedef enum vda_model_kind {
-    VDA_MODEL_VITS_RELATIVE_32_FRAMES = 0
+    VDA_MODEL_VITS_RELATIVE_32_FRAMES = 0,
+    VDA_MODEL_VITB_RELATIVE_32_FRAMES = 1,
+    VDA_MODEL_VITL_RELATIVE_32_FRAMES = 2,
+    VDA_MODEL_VITS_METRIC_32_FRAMES = 3,
+    VDA_MODEL_VITB_METRIC_32_FRAMES = 4,
+    VDA_MODEL_VITL_METRIC_32_FRAMES = 5
 } vda_model_kind;
 
 typedef struct vda_transfer_counters {
@@ -68,7 +73,8 @@ VDA_API vda_status VDA_CALL vda_create_vulkan(
 VDA_API void VDA_CALL vda_destroy(vda_context* context);
 /*
  * Executes the official 32-frame graph. Input is normalized RGB FP32 in
- * contiguous TCHW order. Output is contiguous THW relative depth.
+ * contiguous TCHW order. Output is contiguous THW depth with semantics
+ * determined by the selected relative or metric artifact.
  * Width and height must be positive multiples of 14.
  */
 VDA_API vda_status VDA_CALL vda_infer_tensor_f32(
@@ -84,8 +90,9 @@ VDA_API vda_status VDA_CALL vda_infer_tensor_f32(
  * Stateful single-frame contract used by InferBridge's Python worker.
  * Input is BGRA8 capture memory. The runtime preserves BGR channel ordering,
  * performs nearest square resize and ImageNet normalization, advances the
- * official 32-frame hidden-state cache, then returns min/max-normalized depth
- * at the source dimensions. This entry point requires a Vulkan context.
+ * official 32-frame hidden-state cache, then returns source-sized depth.
+ * Relative artifacts are min/max normalized; metric artifacts retain raw
+ * metric depth. This entry point requires a Vulkan context.
  */
 VDA_API vda_status VDA_CALL vda_infer_stream_bgra8_f32(
     vda_context* context,

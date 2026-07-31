@@ -11,7 +11,7 @@ struct EncoderCpuOutput {
     std::uint32_t frames = 0;
     std::uint32_t patch_width = 0;
     std::uint32_t patch_height = 0;
-    std::uint32_t embedding = 384;
+    std::uint32_t embedding = 0;
     std::vector<float> patch_tokens;
     std::vector<float> prepared_tokens;
     std::vector<std::vector<float>> features;

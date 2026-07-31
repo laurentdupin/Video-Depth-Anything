@@ -3,6 +3,7 @@
 #include "dpt_cpu.h"
 #include "encoder_cpu.h"
 #include "model.h"
+#include "model_config.h"
 #if defined(VDA_WITH_VULKAN)
 #include "dpt_gpu.h"
 #include "encoder_gpu.h"
@@ -29,6 +30,7 @@ struct vda_stream_entry {
 #endif
 
 struct vda_context {
+    const vda_native::ModelConfig* config = nullptr;
     std::unique_ptr<vda_native::ModelFile> model;
 #if defined(VDA_WITH_VULKAN)
     std::unique_ptr<vda_native::VulkanContext> vulkan;
@@ -106,12 +108,13 @@ std::vector<float> preprocess_stream_bgra(
     return output;
 }
 
-void resize_normalize_stream_depth(
+void resize_stream_depth(
     const std::vector<float>& source,
     std::uint32_t source_size,
     float* destination,
     std::uint32_t width,
-    std::uint32_t height) {
+    std::uint32_t height,
+    bool normalize) {
     float minimum = std::numeric_limits<float>::infinity();
     float maximum = -std::numeric_limits<float>::infinity();
     for (std::uint32_t y = 0; y < height; ++y) {
@@ -145,9 +148,14 @@ void resize_normalize_stream_depth(
             const float value =
                 top * (1.0f - fy) + bottom * fy;
             destination[std::uint64_t(y) * width + x] = value;
-            minimum = std::min(minimum, value);
-            maximum = std::max(maximum, value);
+            if (normalize) {
+                minimum = std::min(minimum, value);
+                maximum = std::max(maximum, value);
+            }
         }
+    }
+    if (!normalize) {
+        return;
     }
     const float range = maximum - minimum;
     for (std::uint64_t index = 0;
@@ -197,12 +205,12 @@ vda_status VDA_CALL vda_create(
         return fail(VDA_STATUS_INVALID_ARGUMENT, "context is null");
     }
     *context = nullptr;
-    if (!model_path_utf8 || model_path_utf8[0] == '\0' ||
-        model != VDA_MODEL_VITS_RELATIVE_32_FRAMES) {
+    if (!model_path_utf8 || model_path_utf8[0] == '\0') {
         return fail(VDA_STATUS_INVALID_ARGUMENT, "invalid create options");
     }
     return protect([&] {
         auto result = std::make_unique<vda_context>();
+        result->config = &vda_native::model_config(model);
         result->model = std::make_unique<vda_native::ModelFile>(
             model_path_utf8, model);
         *context = result.release();
@@ -229,12 +237,12 @@ vda_status VDA_CALL vda_create_vulkan(
         return fail(VDA_STATUS_INVALID_ARGUMENT, "context is null");
     }
     *context = nullptr;
-    if (!model_path_utf8 || model_path_utf8[0] == '\0' ||
-        model != VDA_MODEL_VITS_RELATIVE_32_FRAMES) {
+    if (!model_path_utf8 || model_path_utf8[0] == '\0') {
         return fail(VDA_STATUS_INVALID_ARGUMENT, "invalid create options");
     }
     return protect([&] {
         auto result = std::make_unique<vda_context>();
+        result->config = &vda_native::model_config(model);
         result->model = std::make_unique<vda_native::ModelFile>(
             model_path_utf8, model);
         result->vulkan =
@@ -249,12 +257,14 @@ vda_status VDA_CALL vda_create_vulkan(
             std::make_unique<vda_native::VdaGpuEncoder>(
                 *result->vulkan,
                 *result->gpu_model,
-                *result->operators);
+                *result->operators,
+                *result->config);
         result->dpt =
             std::make_unique<vda_native::VdaGpuDpt>(
                 *result->vulkan,
                 *result->gpu_model,
-                *result->operators);
+                *result->operators,
+                *result->config);
         *context = result.release();
     });
 #endif
@@ -479,10 +489,11 @@ vda_status VDA_CALL vda_infer_stream_bgra8_f32(
         context->vulkan->download(
             result.buffer, network_depth.data(),
             network_depth.size() * sizeof(float));
-        resize_normalize_stream_depth(
+        resize_stream_depth(
             network_depth, network_size, depth,
             static_cast<std::uint32_t>(width),
-            static_cast<std::uint32_t>(height));
+            static_cast<std::uint32_t>(height),
+            !context->config->metric);
     });
 #endif
 }

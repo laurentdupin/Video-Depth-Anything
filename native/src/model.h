@@ -36,7 +36,10 @@ struct ModelDerivation {
 
 class ModelFile {
 public:
-    ModelFile(const std::string& path_utf8, vda_model_kind expected_model);
+    ModelFile(
+        const std::string& path_utf8,
+        vda_model_kind expected_model,
+        bool enforce_expected_model = true);
     ModelFile(const ModelFile&) = delete;
     ModelFile& operator=(const ModelFile&) = delete;
     ~ModelFile();
@@ -48,6 +51,7 @@ public:
         return tensor_names_;
     }
     const ModelDerivation& derivation() const { return derivation_; }
+    vda_model_kind model_kind() const { return derivation_.model; }
 
 private:
     void close() noexcept;

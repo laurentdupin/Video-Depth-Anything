@@ -1,4 +1,5 @@
 #include "temporal_gpu.h"
+#include "model_config.h"
 
 #include "temporal_attention_spv.h"
 #include "temporal_attention_stream_spv.h"
@@ -8,6 +9,7 @@
 #include "temporal_position_spv.h"
 #include "temporal_transpose_spv.h"
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -31,11 +33,14 @@ std::uint64_t feature_count(const FeatureMap& feature) {
 TemporalGpu::TemporalGpu(
     VulkanContext& context,
     GpuModel& weights,
-    VulkanOperators& operators)
+    VulkanOperators& operators,
+    const ModelConfig& config)
     : context_(context),
       weights_(weights),
       operators_(operators),
-      zero_bias_(context.create_device_buffer(384 * sizeof(float))),
+      zero_bias_(context.create_device_buffer(
+          std::max({config.features, config.project_channels[2],
+                    config.project_channels[3]}) * sizeof(float))),
       group_norm_(context.create_pipeline(
           vda_temporal_group_norm_spv,
           vda_temporal_group_norm_spv_size, 4, 16)),
@@ -57,7 +62,10 @@ TemporalGpu::TemporalGpu(
       output_(context.create_pipeline(
           vda_temporal_output_spv,
           vda_temporal_output_spv_size, 3, 12)) {
-    const std::vector<float> zero(384, 0.0f);
+    const std::vector<float> zero(
+        std::max({config.features, config.project_channels[2],
+                  config.project_channels[3]}),
+        0.0f);
     context_.upload(
         zero_bias_, zero.data(), zero.size() * sizeof(float));
     group_norm_.set_debug_name("temporal_group_norm");

@@ -2,6 +2,8 @@
 #include "inferbridge_harness.h"
 
 #include "video_depth_anything_native.h"
+#include "model.h"
+#include "model_config.h"
 #if defined(VDA_WITH_VULKAN)
 #include "external_gpu.h"
 #endif
@@ -26,6 +28,8 @@ struct ibrh_model {
     ibrh_runtime* runtime = nullptr;
     vda_context* context = nullptr;
     std::string model_path;
+    vda_model_kind model_kind = VDA_MODEL_VITS_RELATIVE_32_FRAMES;
+    bool metric = false;
 #if defined(VDA_WITH_VULKAN)
     std::shared_ptr<vda_native::ExternalGpu> external_gpu;
 #endif
@@ -268,17 +272,28 @@ ibrh_result IBRH_CALL model_load(
             "VDA model path is missing");
     const std::string path = copy_string(request->model_path);
     const std::string parameters = copy_string(request->parameters_json);
-    std::string encoder;
-    if (json_string(parameters, "Encoder", encoder) &&
-        encoder != "vits") {
-        return fail(
-            runtime, IBRH_ERROR_UNSUPPORTED_CAPABILITY,
-            "VDA native harness currently supports the catalog vits model");
-    }
     auto* model = new (std::nothrow) ibrh_model();
     if (model == nullptr) return IBRH_ERROR_INTERNAL;
     model->runtime = runtime;
     model->model_path = path;
+    try {
+        vda_native::ModelFile artifact(
+            path, VDA_MODEL_VITS_RELATIVE_32_FRAMES, false);
+        model->model_kind = artifact.model_kind();
+        const auto& config = vda_native::model_config(model->model_kind);
+        model->metric = config.metric;
+        std::string encoder;
+        if (json_string(parameters, "Encoder", encoder) &&
+            encoder != config.encoder) {
+            delete model;
+            return fail(
+                runtime, IBRH_ERROR_INVALID_ARGUMENT,
+                "VDA Encoder does not match the derived artifact");
+        }
+    } catch (const std::exception& error) {
+        delete model;
+        return fail(runtime, IBRH_ERROR_INVALID_ARGUMENT, error.what());
+    }
     if (!input_size(parameters, model->input_size, model->input_size)) {
         delete model;
         return fail(
@@ -289,7 +304,8 @@ ibrh_result IBRH_CALL model_load(
     if (runtime->adapter_luid != 0u) {
         try {
             model->external_gpu = vda_native::create_external_gpu(
-                path, static_cast<uint32_t>(runtime->vulkan_device_index));
+                path, static_cast<uint32_t>(runtime->vulkan_device_index),
+                model->model_kind);
             const auto capabilities = model->external_gpu->capabilities();
             if (!capabilities.available ||
                 capabilities.adapter_luid != runtime->adapter_luid)
@@ -304,7 +320,7 @@ ibrh_result IBRH_CALL model_load(
 #endif
     {
         const vda_status status = vda_create_vulkan(
-            path.c_str(), VDA_MODEL_VITS_RELATIVE_32_FRAMES,
+            path.c_str(), model->model_kind,
             static_cast<uint32_t>(runtime->vulkan_device_index),
             &model->context);
         if (status != VDA_STATUS_OK) {
@@ -328,7 +344,7 @@ void IBRH_CALL model_unload(ibrh_model* model) {
 }
 
 ibrh_result IBRH_CALL model_describe_io(const ibrh_model* m,size_t n,ibrh_model_io_descriptor* o){if(!m||!o)return IBRH_ERROR_INVALID_ARGUMENT;if(n<sizeof(*o))return IBRH_ERROR_STRUCT_TOO_SMALL;*o={};o->struct_size=sizeof(*o);o->api_version=IBRH_CURRENT_API_VERSION;o->input_count=o->output_count=1;return IBRH_OK;}
-ibrh_result IBRH_CALL model_get_port(const ibrh_model* m,uint32_t d,uint32_t i,size_t n,ibrh_port_descriptor* o){if(!m||!o)return IBRH_ERROR_INVALID_ARGUMENT;if(n<sizeof(*o))return IBRH_ERROR_STRUCT_TOO_SMALL;if(i||(d!=IBRH_PORT_INPUT&&d!=IBRH_PORT_OUTPUT))return IBRH_ERROR_NOT_FOUND;*o={};o->struct_size=sizeof(*o);o->api_version=IBRH_CURRENT_API_VERSION;o->direction=d;o->semantic=d==IBRH_PORT_INPUT?IBRH_SEMANTIC_IMAGE:IBRH_SEMANTIC_DEPTH;o->payload_type=d==IBRH_PORT_INPUT?IBRH_PIXEL_BGRA8:IBRH_PIXEL_DEPTH_FLOAT32;o->pixel_format=o->payload_type;o->accepted_pixel_format_mask=1ull<<o->pixel_format;o->resource_kind=IBRH_RESOURCE_KIND_IMAGE_2D;o->depth=1;o->flags=IBRH_DESCRIPTOR_DYNAMIC_WIDTH|IBRH_DESCRIPTOR_DYNAMIC_HEIGHT;return IBRH_OK;}
+ibrh_result IBRH_CALL model_get_port(const ibrh_model* m,uint32_t d,uint32_t i,size_t n,ibrh_port_descriptor* o){if(!m||!o)return IBRH_ERROR_INVALID_ARGUMENT;if(n<sizeof(*o))return IBRH_ERROR_STRUCT_TOO_SMALL;if(i||(d!=IBRH_PORT_INPUT&&d!=IBRH_PORT_OUTPUT))return IBRH_ERROR_NOT_FOUND;*o={};o->struct_size=sizeof(*o);o->api_version=IBRH_CURRENT_API_VERSION;o->direction=d;o->semantic=d==IBRH_PORT_INPUT?IBRH_SEMANTIC_IMAGE:IBRH_SEMANTIC_DEPTH;o->payload_type=d==IBRH_PORT_INPUT?IBRH_PIXEL_BGRA8:(m->metric?IBRH_PIXEL_DEPTH_METRIC_FLOAT32:IBRH_PIXEL_DEPTH_FLOAT32);o->pixel_format=o->payload_type;o->accepted_pixel_format_mask=1ull<<o->pixel_format;o->resource_kind=IBRH_RESOURCE_KIND_IMAGE_2D;o->depth=1;o->flags=IBRH_DESCRIPTOR_DYNAMIC_WIDTH|IBRH_DESCRIPTOR_DYNAMIC_HEIGHT;return IBRH_OK;}
 ibrh_result IBRH_CALL model_plan_outputs(const ibrh_model* m,size_t n,const ibrh_output_plan_request* r,uint32_t c,ibrh_port_descriptor* o){if(!m||!r||!o)return IBRH_ERROR_INVALID_ARGUMENT;if(n<sizeof(*r)||r->struct_size<sizeof(*r)||c<1)return IBRH_ERROR_STRUCT_TOO_SMALL;if(r->input_count!=1||!r->inputs)return IBRH_ERROR_INVALID_ARGUMENT;auto x=model_get_port(m,IBRH_PORT_OUTPUT,0,sizeof(o[0]),&o[0]);if(x!=IBRH_OK)return x;o[0].width=r->inputs[0].width;o[0].height=r->inputs[0].height;o[0].flags=0;return IBRH_OK;}
 
 ibrh_result IBRH_CALL submit(ibrh_model* model,size_t n,const ibrh_submit_request* r,ibrh_job** out){
@@ -336,7 +352,8 @@ ibrh_result IBRH_CALL submit(ibrh_model* model,size_t n,const ibrh_submit_reques
  if(r->input_count!=1||!r->inputs||r->output_count!=1||!r->outputs)return IBRH_ERROR_INVALID_ARGUMENT;
  const auto&s=r->inputs[0];const auto&t=r->outputs[0];const auto&i=s.resource;const auto&o=t.resource;
  uint32_t size=model->input_size;const std::string p=copy_string(r->parameters_json);if(!input_size(p,size,size))return IBRH_ERROR_INVALID_ARGUMENT;
- if(!i.width||!i.height||o.width!=i.width||o.height!=i.height||o.pixel_format!=IBRH_PIXEL_DEPTH_FLOAT32)return IBRH_ERROR_INVALID_ARGUMENT;
+ const uint32_t output_format=model->metric?IBRH_PIXEL_DEPTH_METRIC_FLOAT32:IBRH_PIXEL_DEPTH_FLOAT32;
+ if(!i.width||!i.height||o.width!=i.width||o.height!=i.height||o.pixel_format!=output_format)return IBRH_ERROR_INVALID_ARGUMENT;
  std::string reset;bool reset_stream=json_string(p,"Reset",reset)&&reset=="YES";
 #if defined(VDA_WITH_VULKAN) && defined(_WIN32)
  if(i.domain==IBRH_RESOURCE_DOMAIN_D3D12){if(!model->external_gpu||o.domain!=IBRH_RESOURCE_DOMAIN_D3D12||i.pixel_format!=IBRH_PIXEL_BGRA8||i.native_handle_type!=IBRH_NATIVE_HANDLE_WIN32_SHARED||o.native_handle_type!=IBRH_NATIVE_HANDLE_WIN32_SHARED||s.synchronization.kind!=IBRH_SYNC_D3D12_FENCE||s.synchronization.operation!=IBRH_SYNC_WAIT||t.synchronization.kind!=IBRH_SYNC_D3D12_FENCE||t.synchronization.operation!=IBRH_SYNC_SIGNAL)return IBRH_ERROR_UNSUPPORTED_CAPABILITY;

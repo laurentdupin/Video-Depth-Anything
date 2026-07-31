@@ -24,7 +24,8 @@ public:
     TemporalGpu(
         VulkanContext& context,
         GpuModel& weights,
-        VulkanOperators& operators);
+        VulkanOperators& operators,
+        const ModelConfig& config);
 
     FeatureMap forward(
         std::uint32_t module_index,

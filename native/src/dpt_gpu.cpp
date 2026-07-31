@@ -28,21 +28,21 @@ const VulkanBuffer& weight(
 VdaGpuDpt::VdaGpuDpt(
     VulkanContext& context,
     GpuModel& weights,
-    VulkanOperators& operators)
+    VulkanOperators& operators,
+    const ModelConfig& config)
     : context_(context),
       weights_(weights),
       operators_(operators),
       zero_bias_(context.create_device_buffer(sizeof(float))),
       temporal_(std::make_unique<TemporalGpu>(
-          context, weights, operators)) {
+          context, weights, operators, config)) {
     const float zero = 0.0f;
     context_.upload(zero_bias_, &zero, sizeof(zero));
-    embedding_ = 384;
-    features_ = 64;
-    project_channels_[0] = 48;
-    project_channels_[1] = 96;
-    project_channels_[2] = 192;
-    project_channels_[3] = 384;
+    embedding_ = config.embedding;
+    features_ = config.features;
+    std::copy(
+        config.project_channels.begin(), config.project_channels.end(),
+        project_channels_);
     convolution_block_selected_ = true;
 }
 

@@ -7,6 +7,7 @@
 #include "gpu_io.h"
 #include "gpu_model.h"
 #include "model.h"
+#include "model_config.h"
 #include "operators.h"
 #include "temporal_gpu.h"
 #include "vulkan.h"
@@ -98,11 +99,12 @@ private:
 
 class ExternalGpuImpl final : public ExternalGpu {
 public:
-    ExternalGpuImpl(const std::string& path, std::uint32_t index)
-        : model_(path, VDA_MODEL_VITS_RELATIVE_32_FRAMES), context_(index),
+    ExternalGpuImpl(
+        const std::string& path, std::uint32_t index, vda_model_kind kind)
+        : config_(model_config(kind)), model_(path, kind), context_(index),
           gpu_model_(model_, context_), operators_(context_),
-          encoder_(context_, gpu_model_, operators_),
-          dpt_(context_, gpu_model_, operators_), io_(context_)
+          encoder_(context_, gpu_model_, operators_, config_),
+          dpt_(context_, gpu_model_, operators_, config_), io_(context_)
 #if defined(_WIN32)
           , d3d12_(matching_d3d12_device(context_.adapter_luid()))
 #endif
@@ -205,8 +207,9 @@ public:
                     retained.push_back(current);
                     cache_.push_back(current); ++stream_id_;
                     if(stream_id_+32>42) cache_.erase(cache_.begin()+1);
-                    io_.resize_normalize(
-                        output, depth.buffer, depth.width, depth.height);
+                    io_.resize_depth(
+                        output, depth.buffer, depth.width, depth.height,
+                        !config_.metric);
                     context_.release_external_image(
                         input, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                         VK_ACCESS_SHADER_READ_BIT);
@@ -227,6 +230,7 @@ private:
     void reset_stream() {
         cache_.clear(); stream_id_=-1; width_=height_=size_=0;
     }
+    const ModelConfig& config_;
     ModelFile model_; VulkanContext context_; GpuModel gpu_model_;
     VulkanOperators operators_; VdaGpuEncoder encoder_; VdaGpuDpt dpt_; GpuIo io_;
     std::vector<std::shared_ptr<StreamEntry>> cache_;
@@ -241,8 +245,8 @@ private:
 }  // namespace
 
 std::shared_ptr<ExternalGpu> create_external_gpu(
-    const std::string& path, std::uint32_t index) {
-    return std::make_shared<ExternalGpuImpl>(path,index);
+    const std::string& path, std::uint32_t index, vda_model_kind kind) {
+    return std::make_shared<ExternalGpuImpl>(path,index,kind);
 }
 ExternalGpuCapabilities probe_external_gpu(std::uint32_t index) {
 #if defined(_WIN32)

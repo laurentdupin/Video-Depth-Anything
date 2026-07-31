@@ -1,4 +1,5 @@
 #include "model.h"
+#include "model_config.h"
 
 #include <cstring>
 #include <limits>
@@ -98,7 +99,8 @@ std::wstring utf8_to_wide(const std::string& text) {
 
 ModelFile::ModelFile(
     const std::string& path_utf8,
-    vda_model_kind expected_model) {
+    vda_model_kind expected_model,
+    bool enforce_expected_model) {
     try {
 #if defined(_WIN32)
         const std::wstring path = utf8_to_wide(path_utf8);
@@ -156,7 +158,9 @@ ModelFile::ModelFile(
         if (std::memcmp(header.magic, kMagic, sizeof(kMagic)) != 0 ||
             header.version != kFormatVersion ||
             header.endian != kEndianTag ||
-            header.model != static_cast<std::uint32_t>(expected_model) ||
+            !valid_model_kind(header.model) ||
+            (enforce_expected_model &&
+             header.model != static_cast<std::uint32_t>(expected_model)) ||
             header.tensor_count == 0 || header.tensor_count > 2048 ||
             header.file_bytes != size_) {
             throw std::runtime_error("invalid VDA model header");

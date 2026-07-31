@@ -1,4 +1,5 @@
 #include "encoder_cpu.h"
+#include "model_config.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10,8 +11,6 @@
 namespace vda_native {
 namespace {
 
-constexpr std::uint32_t kEmbedding = 384;
-constexpr std::uint32_t kHeads = 6;
 constexpr std::uint32_t kHeadChannels = 64;
 
 const TensorView& tensor(
@@ -63,37 +62,38 @@ void layer_norm(
     std::uint32_t rows,
     const TensorView& scale,
     const TensorView& bias,
+    std::uint32_t embedding,
     std::vector<float>& output) {
-    if (input.size() != std::uint64_t(rows) * kEmbedding ||
+    if (input.size() != std::uint64_t(rows) * embedding ||
         scale.rank != 1 || bias.rank != 1 ||
-        scale.dimensions[0] != kEmbedding ||
-        bias.dimensions[0] != kEmbedding) {
+        scale.dimensions[0] != embedding ||
+        bias.dimensions[0] != embedding) {
         throw std::runtime_error("encoder layer norm shape mismatch");
     }
     output.resize(input.size());
     for (std::uint32_t row = 0; row < rows; ++row) {
         const float* source =
-            input.data() + std::uint64_t(row) * kEmbedding;
+            input.data() + std::uint64_t(row) * embedding;
         float* destination =
-            output.data() + std::uint64_t(row) * kEmbedding;
+            output.data() + std::uint64_t(row) * embedding;
         float mean = 0.0f;
         for (std::uint32_t channel = 0;
-             channel < kEmbedding;
+             channel < embedding;
              ++channel) {
             mean += source[channel];
         }
-        mean /= static_cast<float>(kEmbedding);
+        mean /= static_cast<float>(embedding);
         float variance = 0.0f;
         for (std::uint32_t channel = 0;
-             channel < kEmbedding;
+             channel < embedding;
              ++channel) {
             const float difference = source[channel] - mean;
             variance += difference * difference;
         }
-        variance /= static_cast<float>(kEmbedding);
+        variance /= static_cast<float>(embedding);
         const float inverse = 1.0f / std::sqrt(variance + 1.0e-6f);
         for (std::uint32_t channel = 0;
-             channel < kEmbedding;
+             channel < embedding;
              ++channel) {
             destination[channel] =
                 (source[channel] - mean) * inverse *
@@ -128,12 +128,13 @@ void add_position(
     std::vector<float>& tokens,
     std::uint32_t frames,
     std::uint32_t patch_width,
-    std::uint32_t patch_height) {
+    std::uint32_t patch_height,
+    std::uint32_t embedding) {
     const TensorView& position =
         tensor(model, "pretrained.pos_embed", 3);
     if (position.dimensions[0] != 1 ||
         position.dimensions[1] != 1370 ||
-        position.dimensions[2] != kEmbedding) {
+        position.dimensions[2] != embedding) {
         throw std::runtime_error("unexpected DINO position shape");
     }
     const std::uint32_t token_count =
@@ -141,9 +142,9 @@ void add_position(
     for (std::uint32_t frame = 0; frame < frames; ++frame) {
         float* class_token =
             tokens.data() + std::uint64_t(frame) *
-                token_count * kEmbedding;
+                token_count * embedding;
         for (std::uint32_t channel = 0;
-             channel < kEmbedding;
+             channel < embedding;
              ++channel) {
             class_token[channel] += position.data[channel];
         }
@@ -164,9 +165,9 @@ void add_position(
                     static_cast<int>(std::floor(source_x));
                 float* destination = class_token +
                     (1 + std::uint64_t(y) * patch_width + x) *
-                        kEmbedding;
+                        embedding;
                 for (std::uint32_t channel = 0;
-                     channel < kEmbedding;
+                     channel < embedding;
                      ++channel) {
                     float value = 0.0f;
                     for (int oy = -1; oy <= 2; ++oy) {
@@ -183,7 +184,7 @@ void add_position(
                             value += wy * wx * position.data[
                                 (1 + std::uint64_t(sample_y) * 37 +
                                  sample_x) *
-                                    kEmbedding +
+                                    embedding +
                                 channel];
                         }
                     }
@@ -200,27 +201,29 @@ void attention(
     const std::vector<float>& normalized,
     std::uint32_t frames,
     std::uint32_t token_count,
+    std::uint32_t embedding,
+    std::uint32_t heads,
     std::vector<float>& output) {
     const std::uint32_t rows = frames * token_count;
     std::vector<float> qkv;
     linear(
-        normalized, rows, kEmbedding,
+        normalized, rows, embedding,
         tensor(model, prefix + "qkv.weight", 2),
         tensor(model, prefix + "qkv.bias", 1),
         qkv);
     std::vector<float> attended(
-        std::uint64_t(rows) * kEmbedding);
+        std::uint64_t(rows) * embedding);
     std::vector<float> scores(token_count);
     constexpr float scale = 0.125f;
     for (std::uint32_t frame = 0; frame < frames; ++frame) {
-        for (std::uint32_t head = 0; head < kHeads; ++head) {
+        for (std::uint32_t head = 0; head < heads; ++head) {
             for (std::uint32_t query_token = 0;
                  query_token < token_count;
                  ++query_token) {
                 const float* query = qkv.data() +
                     (std::uint64_t(frame * token_count + query_token) *
                          3 *
-                         kEmbedding) +
+                         embedding) +
                     head * kHeadChannels;
                 float maximum = -std::numeric_limits<float>::infinity();
                 for (std::uint32_t key_token = 0;
@@ -229,8 +232,8 @@ void attention(
                     const float* key = qkv.data() +
                         std::uint64_t(frame * token_count + key_token) *
                             3 *
-                            kEmbedding +
-                        kEmbedding + head * kHeadChannels;
+                            embedding +
+                        embedding + head * kHeadChannels;
                     float score = 0.0f;
                     for (std::uint32_t channel = 0;
                          channel < kHeadChannels;
@@ -248,7 +251,7 @@ void attention(
                 }
                 float* destination = attended.data() +
                     std::uint64_t(frame * token_count + query_token) *
-                        kEmbedding +
+                        embedding +
                     head * kHeadChannels;
                 for (std::uint32_t channel = 0;
                      channel < kHeadChannels;
@@ -261,8 +264,8 @@ void attention(
                             std::uint64_t(
                                 frame * token_count + source_token) *
                                 3 *
-                                kEmbedding +
-                            2 * kEmbedding + head * kHeadChannels;
+                                embedding +
+                            2 * embedding + head * kHeadChannels;
                         value += scores[source_token] / denominator *
                             source[channel];
                     }
@@ -272,7 +275,7 @@ void attention(
         }
     }
     linear(
-        attended, rows, kEmbedding,
+        attended, rows, embedding,
         tensor(model, prefix + "proj.weight", 2),
         tensor(model, prefix + "proj.bias", 1),
         output);
@@ -283,10 +286,11 @@ void mlp(
     const std::string& prefix,
     const std::vector<float>& normalized,
     std::uint32_t rows,
+    std::uint32_t embedding,
     std::vector<float>& output) {
     std::vector<float> hidden;
     linear(
-        normalized, rows, kEmbedding,
+        normalized, rows, embedding,
         tensor(model, prefix + "fc1.weight", 2),
         tensor(model, prefix + "fc1.bias", 1),
         hidden);
@@ -297,7 +301,7 @@ void mlp(
             (1.0f + std::erf(value * inverse_sqrt_two));
     }
     linear(
-        hidden, rows, kEmbedding * 4,
+        hidden, rows, embedding * 4,
         tensor(model, prefix + "fc2.weight", 2),
         tensor(model, prefix + "fc2.bias", 1),
         output);
@@ -315,6 +319,8 @@ EncoderCpuOutput encoder_cpu(
         width % 14 != 0 || height % 14 != 0) {
         throw std::invalid_argument("invalid CPU encoder input");
     }
+    const ModelConfig& config = model_config(model.model_kind());
+    const std::uint32_t embedding = config.embedding;
     const std::uint32_t patch_width = width / 14;
     const std::uint32_t patch_height = height / 14;
     const std::uint32_t patches = patch_width * patch_height;
@@ -325,20 +331,20 @@ EncoderCpuOutput encoder_cpu(
         model, "pretrained.patch_embed.proj.bias", 1);
     const TensorView& cls = tensor(model, "pretrained.cls_token", 3);
     std::vector<float> state(
-        std::uint64_t(frames) * token_count * kEmbedding);
+        std::uint64_t(frames) * token_count * embedding);
     for (std::uint32_t frame = 0; frame < frames; ++frame) {
         std::copy_n(
-            cls.data, kEmbedding,
+            cls.data, embedding,
             state.data() +
-                std::uint64_t(frame) * token_count * kEmbedding);
+                std::uint64_t(frame) * token_count * embedding);
         for (std::uint32_t py = 0; py < patch_height; ++py) {
             for (std::uint32_t px = 0; px < patch_width; ++px) {
                 float* destination = state.data() +
                     (std::uint64_t(frame) * token_count +
                      1 + py * patch_width + px) *
-                        kEmbedding;
+                        embedding;
                 for (std::uint32_t out = 0;
-                     out < kEmbedding;
+                     out < embedding;
                      ++out) {
                     float value = patch_bias.data[out];
                     for (std::uint32_t channel = 0;
@@ -372,13 +378,14 @@ EncoderCpuOutput encoder_cpu(
     result.patch_width = patch_width;
     result.patch_height = patch_height;
     result.patch_tokens = state;
-    add_position(model, state, frames, patch_width, patch_height);
+    add_position(
+        model, state, frames, patch_width, patch_height, embedding);
     result.prepared_tokens = state;
+    result.embedding = embedding;
     result.features.reserve(4);
     const std::uint32_t rows = frames * token_count;
-    const std::uint32_t captures[4] = {2, 5, 8, 11};
     std::uint32_t capture = 0;
-    for (std::uint32_t block = 0; block < 12; ++block) {
+    for (std::uint32_t block = 0; block < config.blocks; ++block) {
         const std::string prefix =
             "pretrained.blocks." + std::to_string(block) + ".";
         std::vector<float> normalized;
@@ -386,19 +393,20 @@ EncoderCpuOutput encoder_cpu(
             state, rows,
             tensor(model, prefix + "norm1.weight", 1),
             tensor(model, prefix + "norm1.bias", 1),
+            embedding,
             normalized);
         std::vector<float> attended;
         attention(
             model, prefix + "attn.", normalized,
-            frames, token_count, attended);
+            frames, token_count, embedding, config.heads, attended);
         const TensorView& scale1 =
             tensor(model, prefix + "ls1.gamma", 1);
         for (std::uint32_t row = 0; row < rows; ++row) {
             for (std::uint32_t channel = 0;
-                 channel < kEmbedding;
+                 channel < embedding;
                  ++channel) {
-                state[std::uint64_t(row) * kEmbedding + channel] +=
-                    attended[std::uint64_t(row) * kEmbedding + channel] *
+                state[std::uint64_t(row) * embedding + channel] +=
+                    attended[std::uint64_t(row) * embedding + channel] *
                     scale1.data[channel];
             }
         }
@@ -406,40 +414,42 @@ EncoderCpuOutput encoder_cpu(
             state, rows,
             tensor(model, prefix + "norm2.weight", 1),
             tensor(model, prefix + "norm2.bias", 1),
+            embedding,
             normalized);
         std::vector<float> feed_forward;
         mlp(
             model, prefix + "mlp.", normalized,
-            rows, feed_forward);
+            rows, embedding, feed_forward);
         const TensorView& scale2 =
             tensor(model, prefix + "ls2.gamma", 1);
         for (std::uint32_t row = 0; row < rows; ++row) {
             for (std::uint32_t channel = 0;
-                 channel < kEmbedding;
+                 channel < embedding;
                  ++channel) {
-                state[std::uint64_t(row) * kEmbedding + channel] +=
+                state[std::uint64_t(row) * embedding + channel] +=
                     feed_forward[
-                        std::uint64_t(row) * kEmbedding + channel] *
+                        std::uint64_t(row) * embedding + channel] *
                     scale2.data[channel];
             }
         }
 
-        if (capture < 4 && block == captures[capture]) {
+        if (capture < 4 && block == config.captures[capture]) {
             layer_norm(
                 state, rows,
                 tensor(model, "pretrained.norm.weight", 1),
                 tensor(model, "pretrained.norm.bias", 1),
+                embedding,
                 normalized);
             std::vector<float> feature(
-                std::uint64_t(frames) * patches * kEmbedding);
+                std::uint64_t(frames) * patches * embedding);
             for (std::uint32_t frame = 0; frame < frames; ++frame) {
                 std::copy_n(
                     normalized.data() +
                         (std::uint64_t(frame) * token_count + 1) *
-                            kEmbedding,
-                    std::uint64_t(patches) * kEmbedding,
+                            embedding,
+                    std::uint64_t(patches) * embedding,
                     feature.data() +
-                        std::uint64_t(frame) * patches * kEmbedding);
+                        std::uint64_t(frame) * patches * embedding);
             }
             result.features.push_back(std::move(feature));
             ++capture;

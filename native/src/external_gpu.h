@@ -5,6 +5,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "video_depth_anything_native.h"
+
 namespace vda_native {
 
 struct ExternalGpuCapabilities {
@@ -42,7 +44,8 @@ public:
         std::uint64_t& download_bytes) const = 0;
 };
 std::shared_ptr<ExternalGpu> create_external_gpu(
-    const std::string& model_path, std::uint32_t device_index);
+    const std::string& model_path, std::uint32_t device_index,
+    vda_model_kind model_kind);
 ExternalGpuCapabilities probe_external_gpu(std::uint32_t device_index);
 
 }  // namespace vda_native

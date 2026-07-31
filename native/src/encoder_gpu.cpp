@@ -25,17 +25,15 @@ std::string block_name(std::uint32_t block, const char* suffix) {
 VdaGpuEncoder::VdaGpuEncoder(
     VulkanContext& context,
     GpuModel& weights,
-    VulkanOperators& operators)
+    VulkanOperators& operators,
+    const ModelConfig& config)
     : context_(context),
       weights_(weights),
       operators_(operators) {
-    embedding_ = 384;
-    heads_ = 6;
-    blocks_ = 12;
-    capture_[0] = 2;
-    capture_[1] = 5;
-    capture_[2] = 8;
-    capture_[3] = 11;
+    embedding_ = config.embedding;
+    heads_ = config.heads;
+    blocks_ = config.blocks;
+    std::copy(config.captures.begin(), config.captures.end(), capture_);
     linear_tile_selected_ = true;
     if (weights_.tensor("pretrained.cls_token").elements != embedding_ ||
         weights_.tensor("pretrained.pos_embed").elements !=
