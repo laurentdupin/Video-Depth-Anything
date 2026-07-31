@@ -1,3 +1,4 @@
+
 #include "inferbridge_harness.h"
 
 #include "video_depth_anything_native.h"
@@ -44,12 +45,6 @@ struct ibrh_job {
     std::vector<float> depth;
 };
 
-struct ibrh_output_lease {
-    ibrh_job* job = nullptr;
-#if defined(VDA_WITH_VULKAN)
-    std::shared_ptr<vda_native::ExternalJob> gpu_job;
-#endif
-};
 
 namespace {
 
@@ -63,7 +58,6 @@ ibrh_result fail(
     if (runtime != nullptr) runtime->error = message;
     return result;
 }
-
 std::string copy_string(ibrh_string_view value) {
     return value.size == 0u ? std::string() :
         std::string(value.data, value.size);
@@ -333,175 +327,25 @@ void IBRH_CALL model_unload(ibrh_model* model) {
     delete model;
 }
 
-ibrh_result IBRH_CALL submit(
-    ibrh_model* model, size_t request_size,
-    const ibrh_submit_request* request, ibrh_job** output) {
-    if (model == nullptr || request == nullptr || output == nullptr)
-        return IBRH_ERROR_INVALID_ARGUMENT;
-    *output = nullptr;
-    if (request_size < sizeof(*request) ||
-        request->struct_size < sizeof(*request))
-        return IBRH_ERROR_STRUCT_TOO_SMALL;
-    if (request->input_count != 1u || request->inputs == nullptr)
-        return fail(
-            model->runtime, IBRH_ERROR_INVALID_ARGUMENT,
-            "VDA requires exactly one BGRA8 input");
-    const ibrh_resource& input = request->inputs[0];
-    if (input.struct_size < sizeof(input))
-        return IBRH_ERROR_STRUCT_TOO_SMALL;
-    uint32_t size = model->input_size;
-    const std::string parameters = copy_string(request->parameters_json);
-    if (!input_size(parameters, size, size))
-        return fail(model->runtime, IBRH_ERROR_INVALID_ARGUMENT,
-                    "VDA Size must be a multiple of 14 up to 4096");
-    if (input.domain == IBRH_RESOURCE_DOMAIN_D3D12 &&
-        input.kind == IBRH_RESOURCE_KIND_IMAGE_2D &&
-        input.native_handle_type == IBRH_NATIVE_HANDLE_WIN32_SHARED) {
-#if !defined(VDA_WITH_VULKAN) || !defined(_WIN32)
-        return fail(model->runtime, IBRH_ERROR_UNSUPPORTED_CAPABILITY,
-                    "VDA D3D12 texture input is unavailable in this build");
-#else
-        if (input.pixel_format != IBRH_PIXEL_BGRA8 ||
-            input.native_handle == 0u || input.width == 0u ||
-            input.height == 0u)
-            return fail(model->runtime, IBRH_ERROR_INVALID_ARGUMENT,
-                        "VDA D3D12 texture descriptor is invalid");
-        if (request->synchronization_count != 0u &&
-            request->synchronizations == nullptr)
-            return fail(model->runtime, IBRH_ERROR_INVALID_ARGUMENT,
-                        "VDA synchronization array is missing");
-        const ibrh_synchronization* wait = nullptr;
-        for (uint32_t index = 0; index < request->synchronization_count; ++index) {
-            const auto& candidate = request->synchronizations[index];
-            if (candidate.struct_size < sizeof(candidate))
-                return IBRH_ERROR_STRUCT_TOO_SMALL;
-            if (candidate.kind == IBRH_SYNC_D3D12_FENCE &&
-                candidate.operation == IBRH_SYNC_WAIT &&
-                candidate.native_handle_type == IBRH_NATIVE_HANDLE_WIN32_SHARED) {
-                if (wait != nullptr)
-                    return fail(model->runtime, IBRH_ERROR_INVALID_ARGUMENT,
-                                "VDA received multiple D3D12 wait fences");
-                wait = &candidate;
-            }
-        }
-        if (wait == nullptr || wait->native_handle == 0u)
-            return fail(model->runtime, IBRH_ERROR_INVALID_ARGUMENT,
-                        "VDA D3D12 input requires a wait fence");
-        auto* job = new (std::nothrow) ibrh_job();
-        if (job == nullptr) return IBRH_ERROR_INTERNAL;
-        try {
-            std::lock_guard<std::mutex> lock(model->submit_mutex);
-            if (!model->external_gpu) {
-                vda_destroy(model->context);
-                model->context = nullptr;
-                model->external_gpu = vda_native::create_external_gpu(
-                    model->model_path,
-                    static_cast<uint32_t>(model->runtime->vulkan_device_index));
-                const auto capabilities = model->external_gpu->capabilities();
-                if (!capabilities.available ||
-                    (model->runtime->adapter_luid != 0u &&
-                     capabilities.adapter_luid != model->runtime->adapter_luid))
-                    throw std::runtime_error(
-                        "VDA GPU does not match the requested LUID");
-            }
-            std::string reset;
-            const bool reset_stream =
-                json_string(parameters, "Reset", reset) && reset == "YES";
-            job->gpu_job = model->external_gpu->submit_texture(
-                {input.native_handle, input.width, input.height, size,
-                 wait->native_handle, wait->value,
-                 request->source_frame_id, request->timestamp_ns,
-                 reset_stream});
-        } catch (const vda_native::GpuSlotsExhausted& error) {
-            delete job;
-            return fail(model->runtime, IBRH_ERROR_INVALID_STATE, error.what());
-        } catch (const std::invalid_argument& error) {
-            delete job;
-            return fail(model->runtime, IBRH_ERROR_INVALID_ARGUMENT, error.what());
-        } catch (const std::exception& error) {
-            delete job;
-            return fail(model->runtime, IBRH_ERROR_UNSUPPORTED_CAPABILITY,
-                        error.what());
-        }
-        job->source_frame_id = request->source_frame_id;
-        job->timestamp_ns = request->timestamp_ns;
-        job->width = input.width; job->height = input.height;
-        *output = job;
-        return IBRH_OK;
-#endif
-    }
-    if (request->synchronization_count != 0u)
-        return fail(
-            model->runtime, IBRH_ERROR_UNSUPPORTED_CAPABILITY,
-            "VDA host harness does not accept external synchronization");
-    if (input.domain != IBRH_RESOURCE_DOMAIN_HOST ||
-        input.kind != IBRH_RESOURCE_KIND_IMAGE_2D ||
-        input.native_handle_type != IBRH_NATIVE_HANDLE_HOST_POINTER ||
-        input.pixel_format != IBRH_PIXEL_BGRA8 ||
-        input.native_handle == 0u || input.width == 0u ||
-        input.height == 0u || input.width > UINT32_MAX / 4u ||
-        input.row_stride_bytes < input.width * 4u ||
-        input.byte_offset > input.byte_size ||
-        input.byte_size - input.byte_offset <
-            static_cast<uint64_t>(input.row_stride_bytes) * input.height) {
-        return fail(
-            model->runtime, IBRH_ERROR_UNSUPPORTED_CAPABILITY,
-            "VDA harness requires a valid host BGRA8 image");
-    }
-#if defined(VDA_WITH_VULKAN)
-    if (model->context == nullptr)
-        return fail(model->runtime, IBRH_ERROR_INVALID_STATE,
-                    "VDA model is already active in GPU-resource mode");
-#endif
-    auto* job = new (std::nothrow) ibrh_job();
-    if (job == nullptr) return IBRH_ERROR_INTERNAL;
-    job->source_frame_id = request->source_frame_id;
-    job->timestamp_ns = request->timestamp_ns;
-    job->width = input.width;
-    job->height = input.height;
-    try {
-        job->depth.resize(
-            static_cast<size_t>(job->width) * job->height);
-    } catch (...) {
-        delete job;
-        return IBRH_ERROR_INTERNAL;
-    }
-    const auto* bgra = reinterpret_cast<const uint8_t*>(
-        static_cast<uintptr_t>(input.native_handle)) + input.byte_offset;
-    {
-        std::lock_guard<std::mutex> lock(model->submit_mutex);
-        std::string reset;
-        if (json_string(
-                copy_string(request->parameters_json), "Reset", reset) &&
-            reset == "YES") {
-            const vda_status reset_status =
-                vda_stream_reset(model->context);
-            if (reset_status != VDA_STATUS_OK) {
-                delete job;
-                return fail(
-                    model->runtime, status_result(reset_status),
-                    vda_last_error());
-            }
-        }
-        const vda_status status = vda_infer_stream_bgra8_f32(
-            model->context,
-            bgra,
-            input.row_stride_bytes,
-            static_cast<int32_t>(input.width),
-            static_cast<int32_t>(input.height),
-            static_cast<int32_t>(size),
-            job->depth.data(), job->depth.size());
-        if (status != VDA_STATUS_OK) {
-            const std::string message =
-                std::string("VDA inference failed: ") + vda_last_error();
-            delete job;
-            return fail(model->runtime, status_result(status), message);
-        }
-    }
-    *output = job;
-    return IBRH_OK;
-}
+ibrh_result IBRH_CALL model_describe_io(const ibrh_model* m,size_t n,ibrh_model_io_descriptor* o){if(!m||!o)return IBRH_ERROR_INVALID_ARGUMENT;if(n<sizeof(*o))return IBRH_ERROR_STRUCT_TOO_SMALL;*o={};o->struct_size=sizeof(*o);o->api_version=IBRH_CURRENT_API_VERSION;o->input_count=o->output_count=1;return IBRH_OK;}
+ibrh_result IBRH_CALL model_get_port(const ibrh_model* m,uint32_t d,uint32_t i,size_t n,ibrh_port_descriptor* o){if(!m||!o)return IBRH_ERROR_INVALID_ARGUMENT;if(n<sizeof(*o))return IBRH_ERROR_STRUCT_TOO_SMALL;if(i||(d!=IBRH_PORT_INPUT&&d!=IBRH_PORT_OUTPUT))return IBRH_ERROR_NOT_FOUND;*o={};o->struct_size=sizeof(*o);o->api_version=IBRH_CURRENT_API_VERSION;o->direction=d;o->semantic=d==IBRH_PORT_INPUT?IBRH_SEMANTIC_IMAGE:IBRH_SEMANTIC_DEPTH;o->payload_type=d==IBRH_PORT_INPUT?IBRH_PIXEL_BGRA8:IBRH_PIXEL_DEPTH_FLOAT32;o->pixel_format=o->payload_type;o->accepted_pixel_format_mask=1ull<<o->pixel_format;o->resource_kind=IBRH_RESOURCE_KIND_IMAGE_2D;o->depth=1;o->flags=IBRH_DESCRIPTOR_DYNAMIC_WIDTH|IBRH_DESCRIPTOR_DYNAMIC_HEIGHT;return IBRH_OK;}
+ibrh_result IBRH_CALL model_plan_outputs(const ibrh_model* m,size_t n,const ibrh_output_plan_request* r,uint32_t c,ibrh_port_descriptor* o){if(!m||!r||!o)return IBRH_ERROR_INVALID_ARGUMENT;if(n<sizeof(*r)||r->struct_size<sizeof(*r)||c<1)return IBRH_ERROR_STRUCT_TOO_SMALL;if(r->input_count!=1||!r->inputs)return IBRH_ERROR_INVALID_ARGUMENT;auto x=model_get_port(m,IBRH_PORT_OUTPUT,0,sizeof(o[0]),&o[0]);if(x!=IBRH_OK)return x;o[0].width=r->inputs[0].width;o[0].height=r->inputs[0].height;o[0].flags=0;return IBRH_OK;}
 
+ibrh_result IBRH_CALL submit(ibrh_model* model,size_t n,const ibrh_submit_request* r,ibrh_job** out){
+ if(!model||!r||!out)return IBRH_ERROR_INVALID_ARGUMENT;*out=nullptr;if(n<sizeof(*r)||r->struct_size<sizeof(*r))return IBRH_ERROR_STRUCT_TOO_SMALL;
+ if(r->input_count!=1||!r->inputs||r->output_count!=1||!r->outputs)return IBRH_ERROR_INVALID_ARGUMENT;
+ const auto&s=r->inputs[0];const auto&t=r->outputs[0];const auto&i=s.resource;const auto&o=t.resource;
+ uint32_t size=model->input_size;const std::string p=copy_string(r->parameters_json);if(!input_size(p,size,size))return IBRH_ERROR_INVALID_ARGUMENT;
+ if(!i.width||!i.height||o.width!=i.width||o.height!=i.height||o.pixel_format!=IBRH_PIXEL_DEPTH_FLOAT32)return IBRH_ERROR_INVALID_ARGUMENT;
+ std::string reset;bool reset_stream=json_string(p,"Reset",reset)&&reset=="YES";
+#if defined(VDA_WITH_VULKAN) && defined(_WIN32)
+ if(i.domain==IBRH_RESOURCE_DOMAIN_D3D12){if(!model->external_gpu||o.domain!=IBRH_RESOURCE_DOMAIN_D3D12||i.pixel_format!=IBRH_PIXEL_BGRA8||i.native_handle_type!=IBRH_NATIVE_HANDLE_WIN32_SHARED||o.native_handle_type!=IBRH_NATIVE_HANDLE_WIN32_SHARED||s.synchronization.kind!=IBRH_SYNC_D3D12_FENCE||s.synchronization.operation!=IBRH_SYNC_WAIT||t.synchronization.kind!=IBRH_SYNC_D3D12_FENCE||t.synchronization.operation!=IBRH_SYNC_SIGNAL)return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
+ auto*j=new(std::nothrow)ibrh_job();if(!j)return IBRH_ERROR_INTERNAL;try{std::lock_guard<std::mutex>l(model->submit_mutex);j->gpu_job=model->external_gpu->submit_texture({static_cast<uintptr_t>(i.native_handle),i.width,i.height,size,static_cast<uintptr_t>(s.synchronization.native_handle),s.synchronization.value,static_cast<uintptr_t>(o.native_handle),o.width,o.height,static_cast<uintptr_t>(t.synchronization.native_handle),t.synchronization.value,r->source_frame_id,r->timestamp_ns,reset_stream});}catch(const std::invalid_argument&e){delete j;return fail(model->runtime,IBRH_ERROR_INVALID_ARGUMENT,e.what());}catch(const std::exception&e){delete j;return fail(model->runtime,IBRH_ERROR_UNSUPPORTED_CAPABILITY,e.what());}j->source_frame_id=r->source_frame_id;j->timestamp_ns=r->timestamp_ns;j->width=i.width;j->height=i.height;*out=j;return IBRH_OK;}
+#endif
+ if(i.domain!=IBRH_RESOURCE_DOMAIN_HOST||o.domain!=IBRH_RESOURCE_DOMAIN_HOST||i.native_handle_type!=IBRH_NATIVE_HANDLE_HOST_POINTER||o.native_handle_type!=IBRH_NATIVE_HANDLE_HOST_POINTER||i.pixel_format!=IBRH_PIXEL_BGRA8||s.synchronization.kind!=IBRH_SYNC_NONE||t.synchronization.kind!=IBRH_SYNC_NONE)return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
+ const auto*bgra=reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(i.native_handle))+i.byte_offset;auto*depth=reinterpret_cast<float*>(static_cast<uintptr_t>(o.native_handle)+o.byte_offset);
+ {std::lock_guard<std::mutex>l(model->submit_mutex);if(reset_stream){auto q=vda_stream_reset(model->context);if(q!=VDA_STATUS_OK)return fail(model->runtime,status_result(q),vda_last_error());}auto q=vda_infer_stream_bgra8_f32(model->context,bgra,i.row_stride_bytes,i.width,i.height,size,depth,static_cast<size_t>(i.width)*i.height);if(q!=VDA_STATUS_OK)return fail(model->runtime,status_result(q),vda_last_error());}
+ auto*j=new(std::nothrow)ibrh_job();if(!j)return IBRH_ERROR_INTERNAL;j->source_frame_id=r->source_frame_id;j->timestamp_ns=r->timestamp_ns;j->width=i.width;j->height=i.height;*out=j;return IBRH_OK;}
 ibrh_result IBRH_CALL job_poll(
     const ibrh_job* job, size_t status_size, ibrh_job_status* status) {
     if (job == nullptr || status == nullptr)
@@ -539,98 +383,6 @@ void IBRH_CALL job_release(ibrh_job* job) {
     release_job(job);
 }
 
-ibrh_result IBRH_CALL output_acquire(
-    ibrh_job* job, uint32_t output_index, size_t descriptor_size,
-    ibrh_output_descriptor* descriptor, ibrh_output_lease** output) {
-    if (job == nullptr || descriptor == nullptr || output == nullptr)
-        return IBRH_ERROR_INVALID_ARGUMENT;
-    *output = nullptr;
-    if (descriptor_size < sizeof(*descriptor))
-        return IBRH_ERROR_STRUCT_TOO_SMALL;
-    if (output_index != 0u) return IBRH_ERROR_NOT_FOUND;
-    auto* lease = new (std::nothrow) ibrh_output_lease();
-    if (lease == nullptr) return IBRH_ERROR_INTERNAL;
-#if defined(VDA_WITH_VULKAN)
-    if (job->gpu_job) {
-        vda_native::ExternalTextureOutput native{};
-        try { native = job->gpu_job->output(); }
-        catch (...) { delete lease; return IBRH_ERROR_CANCELLED; }
-        lease->gpu_job = job->gpu_job;
-        *descriptor = {};
-        descriptor->struct_size = sizeof(*descriptor);
-        descriptor->api_version = IBRH_CURRENT_API_VERSION;
-        descriptor->output_index = output_index;
-        descriptor->payload_type = IBRH_PIXEL_DEPTH_FLOAT32;
-        descriptor->source_frame_id = native.source_frame_id;
-        descriptor->timestamp_ns = native.timestamp_ns;
-        descriptor->resource.struct_size = sizeof(descriptor->resource);
-        descriptor->resource.api_version = IBRH_CURRENT_API_VERSION;
-        descriptor->resource.domain = IBRH_RESOURCE_DOMAIN_D3D12;
-        descriptor->resource.kind = IBRH_RESOURCE_KIND_IMAGE_2D;
-        descriptor->resource.access = IBRH_RESOURCE_ACCESS_READ;
-        descriptor->resource.pixel_format = IBRH_PIXEL_DEPTH_FLOAT32;
-        descriptor->resource.width = native.width;
-        descriptor->resource.height = native.height;
-        descriptor->resource.depth = 1u;
-        descriptor->resource.row_stride_bytes = native.width * sizeof(float);
-        descriptor->resource.byte_size =
-            static_cast<uint64_t>(native.width) * native.height * sizeof(float);
-        descriptor->resource.native_handle_type =
-            IBRH_NATIVE_HANDLE_WIN32_SHARED;
-        descriptor->resource.native_handle = native.shared_texture_handle;
-        descriptor->ready.struct_size = sizeof(descriptor->ready);
-        descriptor->ready.api_version = IBRH_CURRENT_API_VERSION;
-        descriptor->ready.kind = IBRH_SYNC_D3D12_FENCE;
-        descriptor->ready.operation = IBRH_SYNC_WAIT;
-        descriptor->ready.native_handle_type =
-            IBRH_NATIVE_HANDLE_WIN32_SHARED;
-        descriptor->ready.native_handle = native.ready_fence_handle;
-        descriptor->ready.value = native.ready_fence_value;
-        *output = lease;
-        return IBRH_OK;
-    }
-#endif
-    retain_job(job);
-    lease->job = job;
-    *descriptor = {};
-    descriptor->struct_size = sizeof(*descriptor);
-    descriptor->api_version = IBRH_CURRENT_API_VERSION;
-    descriptor->output_index = 0u;
-    descriptor->payload_type = IBRH_PIXEL_DEPTH_FLOAT32;
-    descriptor->source_frame_id = job->source_frame_id;
-    descriptor->timestamp_ns = job->timestamp_ns;
-    descriptor->resource.struct_size = sizeof(descriptor->resource);
-    descriptor->resource.api_version = IBRH_CURRENT_API_VERSION;
-    descriptor->resource.domain = IBRH_RESOURCE_DOMAIN_HOST;
-    descriptor->resource.kind = IBRH_RESOURCE_KIND_IMAGE_2D;
-    descriptor->resource.access = IBRH_RESOURCE_ACCESS_READ;
-    descriptor->resource.pixel_format = IBRH_PIXEL_DEPTH_FLOAT32;
-    descriptor->resource.width = job->width;
-    descriptor->resource.height = job->height;
-    descriptor->resource.depth = 1u;
-    descriptor->resource.row_stride_bytes = job->width * sizeof(float);
-    descriptor->resource.byte_size = job->depth.size() * sizeof(float);
-    descriptor->resource.native_handle_type =
-        IBRH_NATIVE_HANDLE_HOST_POINTER;
-    descriptor->resource.native_handle = static_cast<uint64_t>(
-        reinterpret_cast<uintptr_t>(job->depth.data()));
-    *output = lease;
-    return IBRH_OK;
-}
-
-void IBRH_CALL output_release(ibrh_output_lease* lease) {
-    if (lease == nullptr) return;
-#if defined(VDA_WITH_VULKAN)
-    if (lease->gpu_job) {
-        lease->gpu_job.reset();
-        delete lease;
-        return;
-    }
-#endif
-    release_job(lease->job);
-    delete lease;
-}
-
 ibrh_result IBRH_CALL get_last_error(
     const void* object, char* destination, size_t destination_size,
     size_t* required_size) {
@@ -661,13 +413,11 @@ extern "C" IBRH_API ibrh_result IBRH_CALL ibrh_get_api(
     api->runtime_create = runtime_create;
     api->runtime_destroy = runtime_destroy;
     api->model_load = model_load;
-    api->model_unload = model_unload;
+    api->model_unload = model_unload;api->model_describe_io=model_describe_io;api->model_get_port=model_get_port;api->model_plan_outputs=model_plan_outputs;
     api->submit = submit;
     api->job_poll = job_poll;
     api->job_cancel = job_cancel;
     api->job_release = job_release;
-    api->output_acquire = output_acquire;
-    api->output_release = output_release;
     api->get_last_error = get_last_error;
     return IBRH_OK;
 }
