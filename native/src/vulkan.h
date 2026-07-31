@@ -48,6 +48,7 @@ struct VulkanDispatchResource {
 };
 
 struct VulkanExternalCapabilities {
+    bool timeline_semaphore = false;
     bool d3d12_resource_import = false;
     bool d3d12_fence_import = false;
     bool d3d12_bgra8_sampled_image_import = false;
@@ -280,7 +281,7 @@ public:
             std::forward<Function>(function)();
             return;
         }
-        if (batch_command_ != VK_NULL_HANDLE) {
+        if (batch_command_ != VK_NULL_HANDLE || segmented_batch_) {
             std::forward<Function>(function)();
             return;
         }
@@ -299,7 +300,7 @@ public:
         VulkanSemaphore wait,
         VulkanSemaphore signal,
         Function&& function) {
-        if (batch_command_ != VK_NULL_HANDLE) {
+        if (batch_command_ != VK_NULL_HANDLE || segmented_batch_) {
             throw std::logic_error(
                 "asynchronous Vulkan batch cannot be nested");
         }
@@ -307,6 +308,26 @@ public:
         try {
             std::forward<Function>(function)();
             return end_batch_async(
+                std::move(wait), std::move(signal));
+        } catch (...) {
+            cancel_batch();
+            throw;
+        }
+    }
+
+    template <typename Function>
+    VulkanSubmission segmented_batch_async(
+        VulkanSemaphore wait,
+        VulkanSemaphore signal,
+        Function&& function) {
+        if (batch_command_ != VK_NULL_HANDLE || segmented_batch_) {
+            throw std::logic_error(
+                "asynchronous Vulkan batch cannot be nested");
+        }
+        begin_segmented_batch();
+        try {
+            std::forward<Function>(function)();
+            return end_segmented_batch_async(
                 std::move(wait), std::move(signal));
         } catch (...) {
             cancel_batch();
@@ -356,6 +377,13 @@ private:
     VulkanSubmission end_batch_async(
         VulkanSemaphore wait,
         VulkanSemaphore signal);
+    void begin_segmented_batch();
+    VulkanSubmission end_segmented_batch_async(
+        VulkanSemaphore wait,
+        VulkanSemaphore signal);
+    void finish_segment();
+    VkCommandBuffer active_batch_command();
+    VulkanSemaphore create_timeline_semaphore(std::uint64_t initial_value);
     void cancel_batch() noexcept;
     void release_batch_resources() noexcept;
     void recycle_or_destroy(VulkanDeferredBuffer buffer) noexcept;
@@ -393,6 +421,9 @@ private:
     std::unordered_map<std::string, ProfileStat> profile_stats_;
     VkCommandBuffer batch_command_ = VK_NULL_HANDLE;
     bool batch_has_dispatch_ = false;
+    bool segmented_batch_ = false;
+    bool segment_has_commands_ = false;
+    std::vector<VkCommandBuffer> batch_commands_;
     bool track_resource_hazards_ = true;
     std::vector<VulkanBatchedDescriptor> batch_descriptor_sets_;
     std::vector<VulkanDeferredBuffer> batch_deferred_buffers_;

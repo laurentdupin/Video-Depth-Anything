@@ -1,6 +1,7 @@
 #include "vulkan.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -35,8 +36,10 @@ bool has_extension(
 struct VulkanSubmission::Resources {
     std::vector<VulkanBatchedDescriptor> descriptor_sets;
     std::vector<VulkanDeferredBuffer> deferred_buffers;
+    std::vector<VkCommandBuffer> commands;
     VulkanSemaphore wait;
     VulkanSemaphore signal;
+    VulkanSemaphore timeline;
 };
 
 void VulkanContext::check(VkResult result, const char* operation) {
@@ -390,9 +393,19 @@ VulkanContext::VulkanContext(
         1,
         &priority,
     };
+    VkPhysicalDeviceTimelineSemaphoreFeatures timeline_features{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
+    };
+    VkPhysicalDeviceFeatures2 features2{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        &timeline_features,
+    };
+    vkGetPhysicalDeviceFeatures2(physical_device_, &features2);
+    external_capabilities_.timeline_semaphore =
+        timeline_features.timelineSemaphore == VK_TRUE;
     const VkDeviceCreateInfo device_info{
         VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        nullptr,
+        &timeline_features,
         0,
         1,
         &queue_info,
@@ -1232,8 +1245,192 @@ void VulkanContext::cancel_batch() noexcept {
             device_, command_pool_, 1, &batch_command_);
         batch_command_ = VK_NULL_HANDLE;
     }
+    for (VkCommandBuffer command : batch_commands_) {
+        vkFreeCommandBuffers(device_, command_pool_, 1, &command);
+    }
+    batch_commands_.clear();
+    segmented_batch_ = false;
+    segment_has_commands_ = false;
     batch_has_dispatch_ = false;
     release_batch_resources();
+}
+
+VulkanSubmission VulkanContext::end_segmented_batch_async(
+    VulkanSemaphore wait,
+    VulkanSemaphore signal) {
+    if (!segmented_batch_) {
+        throw std::logic_error("no active segmented Vulkan batch");
+    }
+    finish_segment();
+    if (batch_command_ != VK_NULL_HANDLE) {
+        vkFreeCommandBuffers(device_, command_pool_, 1, &batch_command_);
+        batch_command_ = VK_NULL_HANDLE;
+    }
+    segmented_batch_ = false;
+    if (batch_commands_.empty()) {
+        throw std::logic_error("empty segmented Vulkan batch");
+    }
+    auto resources = std::make_unique<VulkanSubmission::Resources>();
+    resources->descriptor_sets = std::move(batch_descriptor_sets_);
+    resources->deferred_buffers = std::move(batch_deferred_buffers_);
+    resources->commands = std::move(batch_commands_);
+    resources->wait = std::move(wait);
+    resources->signal = std::move(signal);
+    if (resources->commands.size() > 1u)
+        resources->timeline = create_timeline_semaphore(0u);
+
+    VkFence fence = VK_NULL_HANDLE;
+    const VkFenceCreateInfo fence_info{
+        VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, 0};
+    check(vkCreateFence(device_, &fence_info, nullptr, &fence),
+          "vkCreateFence(segmented)");
+    struct SubmitStorage {
+        std::array<VkSemaphore, 1> waits{};
+        std::array<VkSemaphore, 1> signals{};
+        std::array<VkPipelineStageFlags, 1> stages{
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+        std::array<std::uint64_t, 1> wait_values{};
+        std::array<std::uint64_t, 1> signal_values{};
+        VkTimelineSemaphoreSubmitInfo timeline{
+            VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+#if defined(_WIN32)
+        VkD3D12FenceSubmitInfoKHR d3d12{
+            VK_STRUCTURE_TYPE_D3D12_FENCE_SUBMIT_INFO_KHR};
+#endif
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    };
+    std::vector<SubmitStorage> storage(resources->commands.size());
+    const std::size_t last = resources->commands.size() - 1u;
+    for (std::size_t index = 0; index <= last; ++index) {
+        SubmitStorage& item = storage[index];
+        const bool first = index == 0u;
+        const bool final = index == last;
+        item.waits[0] = first
+            ? resources->wait.semaphore_
+            : resources->timeline.semaphore_;
+        item.wait_values[0] = first
+            ? resources->wait.value_
+            : static_cast<std::uint64_t>(index);
+        item.signals[0] = final
+            ? resources->signal.semaphore_
+            : resources->timeline.semaphore_;
+        item.signal_values[0] = final
+            ? resources->signal.value_
+            : static_cast<std::uint64_t>(index + 1u);
+        item.timeline.waitSemaphoreValueCount = 1u;
+        item.timeline.pWaitSemaphoreValues = item.wait_values.data();
+        item.timeline.signalSemaphoreValueCount = 1u;
+        item.timeline.pSignalSemaphoreValues = item.signal_values.data();
+#if defined(_WIN32)
+        if (first || final) {
+            item.d3d12.pNext = &item.timeline;
+            item.d3d12.waitSemaphoreValuesCount = 1u;
+            item.d3d12.pWaitSemaphoreValues = item.wait_values.data();
+            item.d3d12.signalSemaphoreValuesCount = 1u;
+            item.d3d12.pSignalSemaphoreValues = item.signal_values.data();
+            item.submit.pNext = &item.d3d12;
+        } else {
+            item.submit.pNext = &item.timeline;
+        }
+#else
+        item.submit.pNext = &item.timeline;
+#endif
+        item.submit.waitSemaphoreCount = 1u;
+        item.submit.pWaitSemaphores = item.waits.data();
+        item.submit.pWaitDstStageMask = item.stages.data();
+        item.submit.commandBufferCount = 1u;
+        item.submit.pCommandBuffers = &resources->commands[index];
+        item.submit.signalSemaphoreCount = 1u;
+        item.submit.pSignalSemaphores = item.signals.data();
+    }
+    std::vector<VkSubmitInfo> submits;
+    submits.reserve(storage.size());
+    for (const SubmitStorage& item : storage) submits.push_back(item.submit);
+    VkResult submitted = VK_SUCCESS;
+    for (std::size_t index = 0; index < submits.size(); ++index) {
+        submitted = vkQueueSubmit(
+            queue_, 1u, &submits[index],
+            index + 1u == submits.size() ? fence : VK_NULL_HANDLE);
+        if (submitted != VK_SUCCESS) break;
+    }
+    if (submitted != VK_SUCCESS) {
+        vkDestroyFence(device_, fence, nullptr);
+        for (VkCommandBuffer command : resources->commands)
+            vkFreeCommandBuffers(device_, command_pool_, 1, &command);
+        resources->commands.clear();
+        check(submitted, "vkQueueSubmit(segmented)");
+    }
+    VulkanSubmission result;
+    result.owner_ = this;
+    result.fence_ = fence;
+    result.resources_ = resources.release();
+    return result;
+}
+
+void VulkanContext::begin_segmented_batch() {
+    if (batch_command_ != VK_NULL_HANDLE || segmented_batch_) {
+        throw std::logic_error("nested Vulkan batch");
+    }
+    segmented_batch_ = true;
+    batch_command_ = begin_commands();
+    segment_has_commands_ = false;
+    batch_has_dispatch_ = false;
+    batch_commands_.clear();
+    batch_buffer_access_.clear();
+    batch_image_access_.clear();
+    batch_image_layout_.clear();
+}
+
+VkCommandBuffer VulkanContext::active_batch_command() {
+    if (batch_command_ == VK_NULL_HANDLE && segmented_batch_) {
+        batch_command_ = begin_commands();
+        segment_has_commands_ = false;
+        if (!batch_commands_.empty()) {
+            const VkMemoryBarrier barrier{
+                VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+                VK_ACCESS_MEMORY_WRITE_BIT,
+                VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+            };
+            vkCmdPipelineBarrier(
+                batch_command_, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                0, 1, &barrier, 0, nullptr, 0, nullptr);
+            segment_has_commands_ = true;
+        }
+    }
+    return batch_command_;
+}
+
+void VulkanContext::finish_segment() {
+    if (!segmented_batch_ || batch_command_ == VK_NULL_HANDLE ||
+        !segment_has_commands_) return;
+    check(vkEndCommandBuffer(batch_command_), "vkEndCommandBuffer(segment)");
+    batch_commands_.push_back(batch_command_);
+    batch_command_ = VK_NULL_HANDLE;
+    segment_has_commands_ = false;
+    batch_has_dispatch_ = false;
+    batch_buffer_access_.clear();
+    batch_image_access_.clear();
+    batch_image_layout_.clear();
+}
+
+VulkanSemaphore VulkanContext::create_timeline_semaphore(
+    std::uint64_t initial_value) {
+    if (!external_capabilities_.timeline_semaphore)
+        throw std::runtime_error(
+            "Vulkan device has no timeline semaphore support");
+    const VkSemaphoreTypeCreateInfo timeline_info{
+        VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO, nullptr,
+        VK_SEMAPHORE_TYPE_TIMELINE, initial_value};
+    const VkSemaphoreCreateInfo semaphore_info{
+        VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, &timeline_info, 0};
+    VulkanSemaphore result;
+    result.owner_ = this;
+    check(vkCreateSemaphore(
+        device_, &semaphore_info, nullptr, &result.semaphore_),
+        "vkCreateSemaphore(timeline)");
+    result.value_ = initial_value;
+    return result;
 }
 
 void VulkanContext::copy_buffer_raw(
@@ -1242,44 +1439,29 @@ void VulkanContext::copy_buffer_raw(
     VkDeviceSize source_offset,
     VkDeviceSize destination_offset,
     VkDeviceSize bytes) {
-    if (batch_command_ != VK_NULL_HANDLE) {
-        const VkMemoryBarrier before{
-            VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-            nullptr,
-            VK_ACCESS_MEMORY_WRITE_BIT,
-            VK_ACCESS_TRANSFER_READ_BIT |
-                VK_ACCESS_TRANSFER_WRITE_BIT,
-        };
-        vkCmdPipelineBarrier(
-            batch_command_,
-            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0, 1, &before, 0, nullptr, 0, nullptr);
-        const VkBufferCopy region{
-            source_offset, destination_offset, bytes};
-        vkCmdCopyBuffer(
-            batch_command_, source, destination, 1, &region);
-        const VkMemoryBarrier after{
-            VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-            nullptr,
-            VK_ACCESS_TRANSFER_WRITE_BIT,
-            VK_ACCESS_MEMORY_READ_BIT |
-                VK_ACCESS_MEMORY_WRITE_BIT,
-        };
-        vkCmdPipelineBarrier(
-            batch_command_,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-            0, 1, &after, 0, nullptr, 0, nullptr);
-        batch_has_dispatch_ = true;
-        batch_buffer_access_.clear();
-        return;
-    }
-    VkCommandBuffer command = begin_commands();
+    VkCommandBuffer command = segmented_batch_
+        ? active_batch_command()
+        : begin_commands();
     const VkBufferCopy region{
         source_offset, destination_offset, bytes};
     vkCmdCopyBuffer(command, source, destination, 1, &region);
-    end_commands(command);
+    if (segmented_batch_) {
+        const VkMemoryBarrier release{
+            VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            nullptr,
+            VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+        };
+        vkCmdPipelineBarrier(
+            command,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0, 1, &release, 0, nullptr, 0, nullptr);
+        segment_has_commands_ = true;
+        finish_segment();
+    } else {
+        end_commands(command);
+    }
 }
 
 void VulkanContext::copy(
@@ -1344,7 +1526,7 @@ void VulkanContext::transfer_counters(
 void VulkanContext::acquire_external_buffer(
     const VulkanBuffer& buffer,
     VkAccessFlags destination_access) {
-    if (batch_command_ == VK_NULL_HANDLE ||
+    if ((!segmented_batch_ && batch_command_ == VK_NULL_HANDLE) ||
         buffer.owner_ != this ||
         buffer.buffer_ == VK_NULL_HANDLE) {
         throw std::invalid_argument(
@@ -1362,7 +1544,7 @@ void VulkanContext::acquire_external_buffer(
         buffer.size_,
     };
     vkCmdPipelineBarrier(
-        batch_command_,
+        active_batch_command(),
         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         0,
@@ -1372,12 +1554,13 @@ void VulkanContext::acquire_external_buffer(
         &barrier,
         0,
         nullptr);
+    segment_has_commands_ = true;
 }
 
 void VulkanContext::release_external_buffer(
     const VulkanBuffer& buffer,
     VkAccessFlags source_access) {
-    if (batch_command_ == VK_NULL_HANDLE ||
+    if ((!segmented_batch_ && batch_command_ == VK_NULL_HANDLE) ||
         buffer.owner_ != this ||
         buffer.buffer_ == VK_NULL_HANDLE) {
         throw std::invalid_argument(
@@ -1395,7 +1578,7 @@ void VulkanContext::release_external_buffer(
         buffer.size_,
     };
     vkCmdPipelineBarrier(
-        batch_command_,
+        active_batch_command(),
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
         0,
@@ -1405,13 +1588,14 @@ void VulkanContext::release_external_buffer(
         &barrier,
         0,
         nullptr);
+    segment_has_commands_ = true;
 }
 
 void VulkanContext::acquire_external_image(
     const VulkanImage& image,
     VkImageLayout layout,
     VkAccessFlags destination_access) {
-    if (batch_command_ == VK_NULL_HANDLE ||
+    if ((!segmented_batch_ && batch_command_ == VK_NULL_HANDLE) ||
         image.owner_ != this ||
         image.image_ == VK_NULL_HANDLE) {
         throw std::invalid_argument(
@@ -1436,7 +1620,7 @@ void VulkanContext::acquire_external_image(
         },
     };
     vkCmdPipelineBarrier(
-        batch_command_,
+        active_batch_command(),
         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         0,
@@ -1446,13 +1630,14 @@ void VulkanContext::acquire_external_image(
         nullptr,
         1,
         &barrier);
+    segment_has_commands_ = true;
 }
 
 void VulkanContext::release_external_image(
     const VulkanImage& image,
     VkImageLayout layout,
     VkAccessFlags source_access) {
-    if (batch_command_ == VK_NULL_HANDLE ||
+    if ((!segmented_batch_ && batch_command_ == VK_NULL_HANDLE) ||
         image.owner_ != this ||
         image.image_ == VK_NULL_HANDLE) {
         throw std::invalid_argument(
@@ -1477,7 +1662,7 @@ void VulkanContext::release_external_image(
         },
     };
     vkCmdPipelineBarrier(
-        batch_command_,
+        active_batch_command(),
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
         0,
@@ -1487,6 +1672,7 @@ void VulkanContext::release_external_image(
         nullptr,
         1,
         &barrier);
+    segment_has_commands_ = true;
 }
 
 VulkanPipeline VulkanContext::create_pipeline(
@@ -1816,14 +2002,15 @@ void VulkanContext::dispatch_resources(
         0,
         nullptr);
 
-    const bool batched = batch_command_ != VK_NULL_HANDLE;
+    const bool batched =
+        batch_command_ != VK_NULL_HANDLE || segmented_batch_;
     if (batched && wait != nullptr) {
         pipeline.cached_descriptor_sets_.push_back(descriptor_set);
         throw std::invalid_argument(
             "external wait is not supported inside a Vulkan batch");
     }
     VkCommandBuffer command =
-        batched ? batch_command_ : begin_commands();
+        batched ? active_batch_command() : begin_commands();
     const bool profile =
         !batched && profile_query_pool_ != VK_NULL_HANDLE;
     if (profile) {
@@ -1977,6 +2164,17 @@ void VulkanContext::dispatch_resources(
             push_constants);
     }
     vkCmdDispatch(command, group_x, group_y, group_z);
+    if (segmented_batch_) {
+        const VkMemoryBarrier release{
+            VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+            VK_ACCESS_MEMORY_WRITE_BIT,
+            VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+        vkCmdPipelineBarrier(
+            command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0, 1, &release, 0, nullptr, 0, nullptr);
+        segment_has_commands_ = true;
+    }
     if (profile) {
         vkCmdWriteTimestamp(
             command,
@@ -1988,6 +2186,7 @@ void VulkanContext::dispatch_resources(
         batch_has_dispatch_ = true;
         batch_descriptor_sets_.push_back(
             {const_cast<VulkanPipeline*>(&pipeline), descriptor_set});
+        if (segmented_batch_) finish_segment();
     } else {
         end_commands(command, wait);
         if (profile) {
@@ -2012,7 +2211,7 @@ void VulkanContext::dispatch_resources(
 }
 
 void VulkanContext::destroy(VulkanBuffer& buffer) noexcept {
-    if (batch_command_ != VK_NULL_HANDLE &&
+    if (batch_command_ != VK_NULL_HANDLE && !segmented_batch_ &&
         (buffer.buffer_ != VK_NULL_HANDLE ||
          buffer.memory_ != VK_NULL_HANDLE)) {
         batch_deferred_buffers_.push_back(
@@ -2089,6 +2288,13 @@ void VulkanContext::destroy(VulkanSubmission& submission) noexcept {
 void VulkanContext::release_submission_resources(
     VulkanSubmission& submission) noexcept {
     if (submission.resources_ == nullptr) return;
+    if (!submission.resources_->commands.empty()) {
+        vkFreeCommandBuffers(
+            device_, command_pool_,
+            static_cast<std::uint32_t>(
+                submission.resources_->commands.size()),
+            submission.resources_->commands.data());
+    }
     for (const VulkanBatchedDescriptor& descriptor :
          submission.resources_->descriptor_sets) {
         if (descriptor.pipeline && descriptor.set) {
