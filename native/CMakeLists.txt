@@ -29,7 +29,7 @@ if(VDA_WITH_VULKAN)
         set(HEADER "${VDA_GENERATED_DIR}/${NAME}_spv.h")
         add_custom_command(
             OUTPUT "${SPIRV}"
-            COMMAND Vulkan::glslc -fshader-stage=compute
+            COMMAND Vulkan::glslc -O -fshader-stage=compute
                 --target-env=vulkan1.3 --target-spv=spv1.6 -Werror
                 "-I${CMAKE_CURRENT_SOURCE_DIR}/src/shaders"
                 -o "${SPIRV}" "${SOURCE}"
