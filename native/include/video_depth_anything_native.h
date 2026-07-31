@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define VDA_ABI_VERSION 3u
+#define VDA_ABI_VERSION 4u
 
 typedef struct vda_context vda_context;
 
@@ -39,6 +39,13 @@ typedef enum vda_status {
 typedef enum vda_model_kind {
     VDA_MODEL_VITS_RELATIVE_32_FRAMES = 0
 } vda_model_kind;
+
+typedef struct vda_transfer_counters {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t tensor_upload_bytes;
+    uint64_t tensor_download_bytes;
+} vda_transfer_counters;
 
 VDA_API uint32_t VDA_CALL vda_abi_version(void);
 VDA_API const char* VDA_CALL vda_version_string(void);
@@ -92,6 +99,8 @@ VDA_API vda_status VDA_CALL vda_infer_stream_bgra8_f32(
 
 VDA_API vda_status VDA_CALL vda_stream_reset(
     vda_context* context);
+VDA_API vda_status VDA_CALL vda_get_transfer_counters(
+    vda_transfer_counters* counters);
 
 #ifdef __cplusplus
 }

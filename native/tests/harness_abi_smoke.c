@@ -23,17 +23,24 @@ int main(void) {
     CHECK(
         api.query_capabilities(sizeof(capabilities), &capabilities) ==
         IBRH_OK);
-    CHECK(capabilities.flags == IBRH_CAP_HOST_MEMORY);
-    CHECK(
-        capabilities.input_domain_mask ==
-        (1ull << IBRH_RESOURCE_DOMAIN_HOST));
-    CHECK(
-        capabilities.output_domain_mask ==
-        (1ull << IBRH_RESOURCE_DOMAIN_HOST));
-    CHECK(capabilities.synchronization_mask == 0u);
+    CHECK((capabilities.flags & IBRH_CAP_HOST_MEMORY) != 0u);
+    CHECK((capabilities.input_domain_mask &
+        (1ull << IBRH_RESOURCE_DOMAIN_HOST)) != 0u);
+    CHECK((capabilities.output_domain_mask &
+        (1ull << IBRH_RESOURCE_DOMAIN_HOST)) != 0u);
     CHECK(capabilities.maximum_inputs == 1u);
     CHECK(capabilities.maximum_outputs == 1u);
-    CHECK(capabilities.maximum_in_flight_jobs == 1u);
+    CHECK(capabilities.maximum_in_flight_jobs == 1u ||
+          capabilities.maximum_in_flight_jobs == 3u);
+    if (capabilities.maximum_in_flight_jobs == 3u) {
+        CHECK((capabilities.flags & IBRH_CAP_GPU_RESOURCES) != 0u);
+        CHECK((capabilities.input_domain_mask &
+            (1ull << IBRH_RESOURCE_DOMAIN_D3D12)) != 0u);
+        CHECK((capabilities.output_domain_mask &
+            (1ull << IBRH_RESOURCE_DOMAIN_D3D12)) != 0u);
+        CHECK((capabilities.synchronization_mask &
+            (1ull << IBRH_SYNC_D3D12_FENCE)) != 0u);
+    }
     CHECK(
         capabilities.harness_id.size ==
         strlen("inferbridge.video-depth-anything.native"));

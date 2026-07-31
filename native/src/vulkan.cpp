@@ -13,6 +13,9 @@
 namespace vda_native {
 namespace {
 
+std::atomic<std::uint64_t> g_tensor_upload_bytes{0u};
+std::atomic<std::uint64_t> g_tensor_download_bytes{0u};
+
 template <typename Handle>
 void exchange_handle(Handle& left, Handle& right) {
     std::swap(left, right);
@@ -452,14 +455,14 @@ VulkanContext::VulkanContext(
         "vkCreateCommandPool");
 
     const VkDescriptorPoolSize pool_sizes[] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4096},
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4096},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16384},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 16384},
     };
     const VkDescriptorPoolCreateInfo descriptor_pool_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         nullptr,
         VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-        1024,
+        4096,
         2,
         pool_sizes,
     };
@@ -1439,6 +1442,30 @@ void VulkanContext::copy_buffer_raw(
     VkDeviceSize source_offset,
     VkDeviceSize destination_offset,
     VkDeviceSize bytes) {
+    if (!segmented_batch_ && batch_command_ != VK_NULL_HANDLE) {
+        const VkMemoryBarrier before{
+            VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+            VK_ACCESS_MEMORY_WRITE_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+        vkCmdPipelineBarrier(
+            batch_command_, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 1, &before, 0, nullptr, 0, nullptr);
+        const VkBufferCopy region{
+            source_offset, destination_offset, bytes};
+        vkCmdCopyBuffer(batch_command_, source, destination, 1, &region);
+        const VkMemoryBarrier after{
+            VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+            VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+        vkCmdPipelineBarrier(
+            batch_command_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0, 1, &after, 0, nullptr, 0, nullptr);
+        batch_has_dispatch_ = true;
+        batch_buffer_access_.clear();
+        return;
+    }
     VkCommandBuffer command = segmented_batch_
         ? active_batch_command()
         : begin_commands();
@@ -1492,6 +1519,8 @@ void VulkanContext::upload(
     tensor_upload_bytes_.fetch_add(
         static_cast<std::uint64_t>(bytes),
         std::memory_order_relaxed);
+    g_tensor_upload_bytes.fetch_add(
+        static_cast<std::uint64_t>(bytes), std::memory_order_relaxed);
     VulkanBuffer staging = create_host_buffer(bytes);
     std::memcpy(staging.mapped_, data, bytes);
     copy_buffer_raw(
@@ -1508,6 +1537,8 @@ void VulkanContext::download(
     tensor_download_bytes_.fetch_add(
         static_cast<std::uint64_t>(bytes),
         std::memory_order_relaxed);
+    g_tensor_download_bytes.fetch_add(
+        static_cast<std::uint64_t>(bytes), std::memory_order_relaxed);
     VulkanBuffer staging = create_host_buffer(bytes);
     copy_buffer_raw(
         source.buffer_, staging.buffer_, 0, 0, bytes);
@@ -1555,6 +1586,13 @@ void VulkanContext::acquire_external_buffer(
         0,
         nullptr);
     segment_has_commands_ = true;
+}
+
+void global_transfer_counters(
+    std::uint64_t& upload_bytes,
+    std::uint64_t& download_bytes) {
+    upload_bytes = g_tensor_upload_bytes.load(std::memory_order_relaxed);
+    download_bytes = g_tensor_download_bytes.load(std::memory_order_relaxed);
 }
 
 void VulkanContext::release_external_buffer(
@@ -1894,6 +1932,25 @@ void VulkanContext::dispatch_buffer_to_image(
         nullptr);
 }
 
+void VulkanContext::dispatch_buffers_to_image(
+    const VulkanPipeline& pipeline,
+    const std::vector<const VulkanBuffer*>& buffers,
+    VulkanImage& image,
+    const void* push_constants,
+    std::uint32_t push_constant_bytes,
+    std::uint32_t group_x,
+    std::uint32_t group_y,
+    std::uint32_t group_z) {
+    std::vector<VulkanDispatchResource> resources;
+    resources.reserve(buffers.size() + 1u);
+    resources.push_back({nullptr, &image});
+    for (const VulkanBuffer* buffer : buffers)
+        resources.push_back({buffer, nullptr});
+    dispatch_resources(
+        pipeline, resources, push_constants, push_constant_bytes,
+        group_x, group_y, group_z, nullptr);
+}
+
 void VulkanContext::dispatch_resources(
     const VulkanPipeline& pipeline,
     const std::vector<VulkanDispatchResource>& resources,
@@ -2211,7 +2268,7 @@ void VulkanContext::dispatch_resources(
 }
 
 void VulkanContext::destroy(VulkanBuffer& buffer) noexcept {
-    if (batch_command_ != VK_NULL_HANDLE && !segmented_batch_ &&
+    if ((batch_command_ != VK_NULL_HANDLE || segmented_batch_) &&
         (buffer.buffer_ != VK_NULL_HANDLE ||
          buffer.memory_ != VK_NULL_HANDLE)) {
         batch_deferred_buffers_.push_back(

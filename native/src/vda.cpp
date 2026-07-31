@@ -349,6 +349,22 @@ vda_status VDA_CALL vda_stream_reset(
 #endif
 }
 
+vda_status VDA_CALL vda_get_transfer_counters(
+    vda_transfer_counters* counters) {
+    if (counters == nullptr || counters->struct_size < sizeof(*counters))
+        return fail(VDA_STATUS_INVALID_ARGUMENT,
+                    "invalid VDA transfer counter descriptor");
+    *counters = {};
+    counters->struct_size = sizeof(*counters);
+    counters->abi_version = VDA_ABI_VERSION;
+#if defined(VDA_WITH_VULKAN)
+    vda_native::global_transfer_counters(
+        counters->tensor_upload_bytes, counters->tensor_download_bytes);
+#endif
+    last_error.clear();
+    return VDA_STATUS_OK;
+}
+
 vda_status VDA_CALL vda_infer_stream_bgra8_f32(
     vda_context* context,
     const uint8_t* bgra,

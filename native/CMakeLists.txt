@@ -76,7 +76,8 @@ if(VDA_WITH_VULKAN)
             softmax_lastdim_half temporal_attention
             temporal_attention_stream temporal_geglu
             temporal_group_norm temporal_output temporal_position
-            temporal_transpose)
+            temporal_transpose preprocess_texture resize_depth
+            reduce_minmax normalize_depth_image)
         vda_compile_shader(${SHADER})
     endforeach()
 endif()
@@ -93,6 +94,8 @@ if(VDA_WITH_VULKAN)
         src/vulkan.cpp
         src/operators.cpp
         src/gpu_model.cpp
+        src/gpu_io.cpp
+        src/external_gpu.cpp
         src/encoder_gpu.cpp
         src/dpt_gpu.cpp
         src/temporal_gpu.cpp
@@ -101,6 +104,10 @@ if(VDA_WITH_VULKAN)
         video_depth_anything_native PRIVATE "${VDA_GENERATED_DIR}")
     target_link_libraries(
         video_depth_anything_native PRIVATE Vulkan::Vulkan)
+    if(WIN32)
+        target_link_libraries(
+            video_depth_anything_native PRIVATE d3d12 dxgi)
+    endif()
     target_compile_definitions(
         video_depth_anything_native PRIVATE VDA_WITH_VULKAN=1)
 endif()
@@ -177,6 +184,15 @@ if(BUILD_TESTING)
     set_tests_properties(
         vda_harness_full_graph PROPERTIES SKIP_RETURN_CODE 77)
     if(VDA_WITH_VULKAN)
+        if(WIN32)
+            add_executable(vda_d3d12_full_graph tests/d3d12_full_graph.cpp)
+            target_link_libraries(vda_d3d12_full_graph PRIVATE
+                video_depth_anything_native d3d12 dxgi)
+            target_include_directories(vda_d3d12_full_graph PRIVATE include)
+            add_test(NAME vda_d3d12_full_graph COMMAND vda_d3d12_full_graph)
+            set_tests_properties(
+                vda_d3d12_full_graph PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
         add_executable(vda_vulkan_smoke
             tests/vulkan_smoke.cpp
             src/vulkan.cpp

@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-07-31",
+  "device": "AMD Radeon RX 9070",
+  "contract": "InferBridge harness API 1.6 D3D12 shared texture/fence",
+  "input": "DXGI_FORMAT_B8G8R8A8_UNORM shared TEXTURE2D",
+  "output": "DXGI_FORMAT_R32_FLOAT shared TEXTURE2D lease",
+  "maximumInFlightJobs": 3,
+  "exactLuidSelection": true,
+  "commonAbiEntryPointsPassed": true,
+  "temporalStateRemainsGpuResident": true,
+  "explicitStreamResetPassed": true,
+  "sourceFrameAndTimestampCorrelation": true,
+  "leaseSurvivesJobModelRuntimeRelease": true,
+  "threeRetainedLeasesAndStableReuse": true,
+  "cancellationAndShutdown": true,
+  "internalSynchronization": "per-operator Vulkan command buffers chained by timeline semaphore values",
+  "cpuWaitsBetweenOperators": 0,
+  "vkQueueWaitIdleCalls": 0,
+  "nativePathTensorUploadByteDelta": 0,
+  "nativePathTensorDownloadByteDelta": 0,
+  "counterScope": "the exact common ibrh submit D3D12 texture path after model load",
+  "cases": [
+    {
+      "id": "video-depth-anything-small",
+      "model": "video_depth_anything_vits.vda",
+      "maximumCpuNormalizedRangeDeviation": 0.00000137091,
+      "passed": true
+    }
+  ]
+}

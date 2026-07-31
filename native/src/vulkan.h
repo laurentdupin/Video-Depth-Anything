@@ -24,6 +24,10 @@
 
 namespace vda_native {
 
+void global_transfer_counters(
+    std::uint64_t& upload_bytes,
+    std::uint64_t& download_bytes);
+
 class VulkanContext;
 class VulkanPipeline;
 class VulkanBuffer;
@@ -268,6 +272,15 @@ public:
     void dispatch_buffer_to_image(
         const VulkanPipeline& pipeline,
         const VulkanBuffer& buffer,
+        VulkanImage& image,
+        const void* push_constants,
+        std::uint32_t push_constant_bytes,
+        std::uint32_t group_x,
+        std::uint32_t group_y = 1,
+        std::uint32_t group_z = 1);
+    void dispatch_buffers_to_image(
+        const VulkanPipeline& pipeline,
+        const std::vector<const VulkanBuffer*>& buffers,
         VulkanImage& image,
         const void* push_constants,
         std::uint32_t push_constant_bytes,
