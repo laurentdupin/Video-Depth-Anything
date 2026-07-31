@@ -283,12 +283,15 @@ ibrh_result IBRH_CALL model_load(
         const auto& config = vda_native::model_config(model->model_kind);
         model->metric = config.metric;
         std::string encoder;
-        if (json_string(parameters, "Encoder", encoder) &&
-            encoder != config.encoder) {
-            delete model;
-            return fail(
-                runtime, IBRH_ERROR_INVALID_ARGUMENT,
-                "VDA Encoder does not match the derived artifact");
+        if (json_string(parameters, "Encoder", encoder)) {
+            const std::string selector = config.metric ?
+                std::string("metric_") + config.encoder : config.encoder;
+            if (encoder != config.encoder && encoder != selector) {
+                delete model;
+                return fail(
+                    runtime, IBRH_ERROR_INVALID_ARGUMENT,
+                    "VDA Encoder does not match the derived artifact");
+            }
         }
     } catch (const std::exception& error) {
         delete model;
