@@ -6,8 +6,8 @@
   "adapterLuid": "8ea8010000000000",
   "apiVersion": "2.0",
   "library": {
-    "path": "native/out/build/Release/video_depth_anything_native.dll",
-    "sha256": "b6dfce01f281c18fa5e0ecb9fe5e175b9a48d4284b66c22d892e779cd1e74579"
+    "path": "native/out/foundation/Release/video_depth_anything_native.dll",
+    "sha256": "323a0e663b33fc034535346080c37bc460fc7c99d015836f695d936243561a21"
   },
   "numericalFixture": {
     "sourceDimensions": [37, 29],
@@ -34,7 +34,7 @@
     "cleanReleaseAndShutdown": true
   },
   "productCanaries": [
-    {"variant": "vits", "outputs": 9, "measuredOutputs": 4, "sourceFrameId": 138, "dimensions": [2560, 1440], "maximumSubmitReturnMs": 1.037, "processFps": 436.0},
+    {"variant": "vits", "outputs": 24, "measuredOutputs": 19, "sourceFrameId": 52, "dimensions": [2560, 1440], "maximumSubmitReturnMs": 1.357, "processFps": 1000.0},
     {"variant": "metric_vits", "outputs": 16, "measuredOutputs": 11, "sourceFrameId": 81, "dimensions": [2560, 1440], "maximumSubmitReturnMs": 1.430, "processFps": 403.1}
   ]
 }
