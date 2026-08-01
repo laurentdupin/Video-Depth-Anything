@@ -9,13 +9,16 @@
 #endif
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <string>
+#include <thread>
 #include <vector>
 
 struct ibrh_runtime {
@@ -24,6 +27,7 @@ struct ibrh_runtime {
     uint64_t adapter_luid = 0u;
 };
 
+struct ibrh_job;
 struct ibrh_model {
     ibrh_runtime* runtime = nullptr;
     vda_context* context = nullptr;
@@ -35,12 +39,24 @@ struct ibrh_model {
 #endif
     uint32_t input_size = 280u;
     std::mutex submit_mutex;
+    std::shared_ptr<std::atomic<uint32_t>> occupied_slots =
+        std::make_shared<std::atomic<uint32_t>>(0u);
+    std::mutex queue_mutex;
+    std::condition_variable queue_condition;
+    std::deque<ibrh_job*> queue;
+    bool stopping = false;
+    std::thread worker;
 };
 
 struct ibrh_job {
     std::atomic<uint32_t> references{1u};
+    std::atomic<uint32_t> state{IBRH_JOB_QUEUED};
+    std::atomic<bool> cancel_requested{false};
+    std::shared_ptr<std::atomic<uint32_t>> occupied_slots;
 #if defined(VDA_WITH_VULKAN)
     std::shared_ptr<vda_native::ExternalJob> gpu_job;
+    vda_native::ExternalTextureRequest request{};
+    std::mutex gpu_mutex;
 #endif
     uint64_t source_frame_id = 0u;
     uint64_t timestamp_ns = 0u;
@@ -178,8 +194,49 @@ void retain_job(ibrh_job* job) {
 }
 
 void release_job(ibrh_job* job) {
-    if (job != nullptr && job->references.fetch_sub(1u) == 1u) delete job;
+    if (job != nullptr && job->references.fetch_sub(1u) == 1u) {
+        if (job->occupied_slots) job->occupied_slots->fetch_sub(1u);
+        delete job;
+    }
 }
+
+#if defined(VDA_WITH_VULKAN) && defined(_WIN32)
+void worker_loop(ibrh_model* model) {
+    for (;;) {
+        ibrh_job* job = nullptr;
+        {
+            std::unique_lock<std::mutex> lock(model->queue_mutex);
+            model->queue_condition.wait(lock, [&] {
+                return model->stopping || !model->queue.empty();
+            });
+            if (model->stopping && model->queue.empty()) return;
+            job = model->queue.front();
+            model->queue.pop_front();
+        }
+        if (job->cancel_requested.load()) {
+            job->state.store(IBRH_JOB_CANCELLED);
+            release_job(job);
+            continue;
+        }
+        try {
+            auto gpu = model->external_gpu->submit_texture(job->request);
+            {
+                std::lock_guard<std::mutex> lock(job->gpu_mutex);
+                job->gpu_job = std::move(gpu);
+            }
+            job->state.store(job->cancel_requested.load() ?
+                IBRH_JOB_CANCELLED : IBRH_JOB_RUNNING);
+            if (job->cancel_requested.load()) {
+                std::lock_guard<std::mutex> lock(job->gpu_mutex);
+                job->gpu_job->cancel();
+            }
+        } catch (...) {
+            job->state.store(IBRH_JOB_FAILED);
+        }
+        release_job(job);
+    }
+}
+#endif
 
 ibrh_result IBRH_CALL query_capabilities(
     size_t capabilities_size, ibrh_capabilities* capabilities) {
@@ -333,6 +390,17 @@ ibrh_result IBRH_CALL model_load(
             return fail(runtime, status_result(status), message);
         }
     }
+#if defined(VDA_WITH_VULKAN) && defined(_WIN32)
+    if (model->external_gpu) {
+        try {
+            model->worker = std::thread(worker_loop, model);
+        } catch (...) {
+            delete model;
+            return fail(runtime, IBRH_ERROR_INTERNAL,
+                "VDA could not start its inference worker");
+        }
+    }
+#endif
     *output = model;
     return IBRH_OK;
 }
@@ -340,6 +408,18 @@ ibrh_result IBRH_CALL model_load(
 void IBRH_CALL model_unload(ibrh_model* model) {
     if (model == nullptr) return;
 #if defined(VDA_WITH_VULKAN)
+    {
+        std::lock_guard<std::mutex> lock(model->queue_mutex);
+        model->stopping = true;
+        for (ibrh_job* job : model->queue) {
+            job->cancel_requested.store(true);
+            job->state.store(IBRH_JOB_CANCELLED);
+            release_job(job);
+        }
+        model->queue.clear();
+    }
+    model->queue_condition.notify_all();
+    if (model->worker.joinable()) model->worker.join();
     model->external_gpu.reset();
 #endif
     vda_destroy(model->context);
@@ -360,12 +440,19 @@ ibrh_result IBRH_CALL submit(ibrh_model* model,size_t n,const ibrh_submit_reques
  std::string reset;bool reset_stream=json_string(p,"Reset",reset)&&reset=="YES";
 #if defined(VDA_WITH_VULKAN) && defined(_WIN32)
  if(i.domain==IBRH_RESOURCE_DOMAIN_D3D12){if(!model->external_gpu||o.domain!=IBRH_RESOURCE_DOMAIN_D3D12||i.pixel_format!=IBRH_PIXEL_BGRA8||i.native_handle_type!=IBRH_NATIVE_HANDLE_WIN32_SHARED||o.native_handle_type!=IBRH_NATIVE_HANDLE_WIN32_SHARED||s.synchronization.kind!=IBRH_SYNC_D3D12_FENCE||s.synchronization.operation!=IBRH_SYNC_WAIT||t.synchronization.kind!=IBRH_SYNC_D3D12_FENCE||t.synchronization.operation!=IBRH_SYNC_SIGNAL)return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
- auto*j=new(std::nothrow)ibrh_job();if(!j)return IBRH_ERROR_INTERNAL;try{std::lock_guard<std::mutex>l(model->submit_mutex);j->gpu_job=model->external_gpu->submit_texture({static_cast<uintptr_t>(i.native_handle),i.width,i.height,size,static_cast<uintptr_t>(s.synchronization.native_handle),s.synchronization.value,static_cast<uintptr_t>(o.native_handle),o.width,o.height,static_cast<uintptr_t>(t.synchronization.native_handle),t.synchronization.value,r->source_frame_id,r->timestamp_ns,reset_stream});}catch(const std::invalid_argument&e){delete j;return fail(model->runtime,IBRH_ERROR_INVALID_ARGUMENT,e.what());}catch(const std::exception&e){delete j;return fail(model->runtime,IBRH_ERROR_UNSUPPORTED_CAPABILITY,e.what());}j->source_frame_id=r->source_frame_id;j->timestamp_ns=r->timestamp_ns;j->width=i.width;j->height=i.height;*out=j;return IBRH_OK;}
+ uint32_t occupied=model->occupied_slots->load();
+ while(occupied<3u&&!model->occupied_slots->compare_exchange_weak(occupied,occupied+1u)){}
+ if(occupied>=3u)return IBRH_ERROR_INVALID_STATE;
+ auto*j=new(std::nothrow)ibrh_job();if(!j){model->occupied_slots->fetch_sub(1u);return IBRH_ERROR_INTERNAL;}
+ j->occupied_slots=model->occupied_slots;j->source_frame_id=r->source_frame_id;j->timestamp_ns=r->timestamp_ns;j->width=i.width;j->height=i.height;
+ j->request={static_cast<uintptr_t>(i.native_handle),i.width,i.height,size,static_cast<uintptr_t>(s.synchronization.native_handle),s.synchronization.value,static_cast<uintptr_t>(o.native_handle),o.width,o.height,static_cast<uintptr_t>(t.synchronization.native_handle),t.synchronization.value,r->source_frame_id,r->timestamp_ns,reset_stream};
+ {std::lock_guard<std::mutex>l(model->queue_mutex);if(model->stopping){release_job(j);return IBRH_ERROR_INVALID_STATE;}retain_job(j);model->queue.push_back(j);}
+ model->queue_condition.notify_one();*out=j;return IBRH_OK;}
 #endif
  if(i.domain!=IBRH_RESOURCE_DOMAIN_HOST||o.domain!=IBRH_RESOURCE_DOMAIN_HOST||i.native_handle_type!=IBRH_NATIVE_HANDLE_HOST_POINTER||o.native_handle_type!=IBRH_NATIVE_HANDLE_HOST_POINTER||i.pixel_format!=IBRH_PIXEL_BGRA8||s.synchronization.kind!=IBRH_SYNC_NONE||t.synchronization.kind!=IBRH_SYNC_NONE)return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
  const auto*bgra=reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(i.native_handle))+i.byte_offset;auto*depth=reinterpret_cast<float*>(static_cast<uintptr_t>(o.native_handle)+o.byte_offset);
  {std::lock_guard<std::mutex>l(model->submit_mutex);if(reset_stream){auto q=vda_stream_reset(model->context);if(q!=VDA_STATUS_OK)return fail(model->runtime,status_result(q),vda_last_error());}auto q=vda_infer_stream_bgra8_f32(model->context,bgra,i.row_stride_bytes,i.width,i.height,size,depth,static_cast<size_t>(i.width)*i.height);if(q!=VDA_STATUS_OK)return fail(model->runtime,status_result(q),vda_last_error());}
- auto*j=new(std::nothrow)ibrh_job();if(!j)return IBRH_ERROR_INTERNAL;j->source_frame_id=r->source_frame_id;j->timestamp_ns=r->timestamp_ns;j->width=i.width;j->height=i.height;*out=j;return IBRH_OK;}
+ auto*j=new(std::nothrow)ibrh_job();if(!j)return IBRH_ERROR_INTERNAL;j->state.store(IBRH_JOB_COMPLETE);j->source_frame_id=r->source_frame_id;j->timestamp_ns=r->timestamp_ns;j->width=i.width;j->height=i.height;*out=j;return IBRH_OK;}
 ibrh_result IBRH_CALL job_poll(
     const ibrh_job* job, size_t status_size, ibrh_job_status* status) {
     if (job == nullptr || status == nullptr)
@@ -374,8 +461,14 @@ ibrh_result IBRH_CALL job_poll(
     *status = {};
     status->struct_size = sizeof(*status);
 #if defined(VDA_WITH_VULKAN)
-    if (job->gpu_job) {
-        switch (job->gpu_job->state()) {
+    std::shared_ptr<vda_native::ExternalJob> gpu_job;
+    {
+        std::lock_guard<std::mutex> lock(
+            const_cast<ibrh_job*>(job)->gpu_mutex);
+        gpu_job = job->gpu_job;
+    }
+    if (gpu_job) {
+        switch (gpu_job->state()) {
             case vda_native::ExternalJobState::running:
                 status->state = IBRH_JOB_RUNNING; break;
             case vda_native::ExternalJobState::complete:
@@ -385,7 +478,7 @@ ibrh_result IBRH_CALL job_poll(
         }
     } else
 #endif
-    status->state = IBRH_JOB_COMPLETE;
+    status->state = job->state.load();
     status->output_count = 1u;
     status->source_frame_id = job->source_frame_id;
     return IBRH_OK;
@@ -394,7 +487,15 @@ ibrh_result IBRH_CALL job_poll(
 ibrh_result IBRH_CALL job_cancel(ibrh_job* job) {
     if (job == nullptr) return IBRH_ERROR_INVALID_ARGUMENT;
 #if defined(VDA_WITH_VULKAN)
-    if (job->gpu_job) { job->gpu_job->cancel(); return IBRH_OK; }
+    job->cancel_requested.store(true);
+    std::shared_ptr<vda_native::ExternalJob> gpu_job;
+    {
+        std::lock_guard<std::mutex> lock(job->gpu_mutex);
+        gpu_job = job->gpu_job;
+    }
+    if (gpu_job) gpu_job->cancel();
+    const uint32_t state=job->state.load();
+    if(state==IBRH_JOB_QUEUED||state==IBRH_JOB_RUNNING)return IBRH_OK;
 #endif
     return IBRH_ERROR_INVALID_STATE;
 }

@@ -13,8 +13,16 @@ import numpy as np
 import torch
 import torch.nn.functional as functional
 
+MODEL_NAMES = (
+    "video_depth_anything_vits", "video_depth_anything_vitb",
+    "video_depth_anything_vitl", "metric_video_depth_anything_vits",
+    "metric_video_depth_anything_vitb",
+    "metric_video_depth_anything_vitl")
 
-def python_frame(image: np.ndarray, model, size: int) -> np.ndarray:
+
+def python_frame(
+    image: np.ndarray, model, size: int, normalize: bool
+) -> np.ndarray:
     model.id += 1
     height, width = image.shape[:2]
     mean = torch.tensor([0.485, 0.456, 0.406])
@@ -50,7 +58,8 @@ def python_frame(image: np.ndarray, model, size: int) -> np.ndarray:
         size=(height, width), mode="bilinear",
         align_corners=True)
     result = depth[-1, 0].numpy()
-    result = (result - result.min()) / (result.max() - result.min())
+    if normalize:
+        result = (result - result.min()) / (result.max() - result.min())
     model.frame_cache_list.append(new_cache)
     model.frame_id_list.append(model.id)
     if model.id + 32 > model.gap + 1:
@@ -70,6 +79,11 @@ def main() -> None:
     parser.add_argument("--size", type=int, default=28)
     parser.add_argument("--width", type=int, default=37)
     parser.add_argument("--height", type=int, default=29)
+    parser.add_argument("--tolerance", type=float, default=0.01)
+    parser.add_argument(
+        "--model",
+        choices=MODEL_NAMES,
+        default="video_depth_anything_vits")
     args = parser.parse_args()
 
     torchvision_library = torch.library.Library("torchvision", "DEF")
@@ -89,9 +103,16 @@ def main() -> None:
     sys.path.insert(0, str(args.repo.resolve()))
     from video_depth_anything.video_depth_stream import VideoDepthAnything
 
+    configurations = {
+        "vits": (64, [48, 96, 192, 384]),
+        "vitb": (128, [96, 192, 384, 768]),
+        "vitl": (256, [256, 512, 1024, 1024]),
+    }
+    metric = args.model.startswith("metric_")
+    encoder = args.model.rsplit("_", 1)[-1]
+    features, out_channels = configurations[encoder]
     model = VideoDepthAnything(
-        encoder="vits", features=64,
-        out_channels=[48, 96, 192, 384])
+        encoder=encoder, features=features, out_channels=out_channels)
     archive = torch.load(
         args.checkpoint, map_location="cpu", weights_only=True)
     model.load_state_dict(archive)
@@ -104,7 +125,7 @@ def main() -> None:
         dtype=np.uint8)
     frames[:, :, :, 3] = 255
     references = [
-        python_frame(frame[:, :, :3], model, args.size)
+        python_frame(frame[:, :, :3], model, args.size, not metric)
         for frame in frames]
 
     library = ctypes.CDLL(str(args.dll.resolve()))
@@ -125,7 +146,8 @@ def main() -> None:
 
     context = ctypes.c_void_p()
     status = library.vda_create_vulkan(
-        str(args.native_model.resolve()).encode(), 0, args.device,
+        str(args.native_model.resolve()).encode(),
+        MODEL_NAMES.index(args.model), args.device,
         ctypes.byref(context))
     if status:
         raise RuntimeError(library.vda_last_error().decode())
@@ -143,10 +165,17 @@ def main() -> None:
             if status:
                 raise RuntimeError(library.vda_last_error().decode())
             difference = np.abs(actual - references[index])
+            denominator = np.maximum(np.abs(references[index]), 1.0e-6)
             reports.append({
                 "frame": index,
                 "maximum_absolute_error": float(difference.max()),
                 "mean_absolute_error": float(difference.mean()),
+                "maximum_relative_error": float(
+                    (difference / denominator).max()),
+                "reference_minimum": float(references[index].min()),
+                "reference_maximum": float(references[index].max()),
+                "actual_minimum": float(actual.min()),
+                "actual_maximum": float(actual.max()),
             })
         if library.vda_stream_reset(context):
             raise RuntimeError(library.vda_last_error().decode())
@@ -161,15 +190,19 @@ def main() -> None:
         if status:
             raise RuntimeError(library.vda_last_error().decode())
         reset_difference = np.abs(reset_actual - references[0])
+        reset_denominator = np.maximum(np.abs(references[0]), 1.0e-6)
         reports.append({
             "frame": "reset-0",
             "maximum_absolute_error": float(reset_difference.max()),
             "mean_absolute_error": float(reset_difference.mean()),
+            "maximum_relative_error": float(
+                (reset_difference / reset_denominator).max()),
         })
     finally:
         library.vda_destroy(context)
     print(json.dumps(reports, indent=2))
-    if max(item["maximum_absolute_error"] for item in reports) > 0.01:
+    error_field = "maximum_relative_error" if metric else "maximum_absolute_error"
+    if max(item[error_field] for item in reports) > args.tolerance:
         raise SystemExit("VDA streaming accuracy gate failed")
 
 

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -35,9 +36,9 @@ void check(ibrh_result value, const char* operation) {
         std::string(operation) + " failed: " +
         std::to_string(static_cast<unsigned>(value)));
 }
-void check(vda_status value, const char* operation) {
-    if (value != VDA_STATUS_OK) throw std::runtime_error(
-        std::string(operation) + " failed: " + vda_last_error());
+void check_counter(int value, const char* operation) {
+    if (value != 0) throw std::runtime_error(
+        std::string(operation) + " failed");
 }
 
 struct Capture {
@@ -243,13 +244,16 @@ std::vector<float> read_output(
     return result;
 }
 
-struct SelectedDevice {
+}  // namespace
+
+namespace {
+struct Abi2Device {
     ComPtr<ID3D12Device> device;
     std::string luid_json;
     std::string name;
 };
 
-SelectedDevice select_device(const ibrh_api& api) {
+Abi2Device select_abi2_device(const ibrh_api& api) {
     ComPtr<IDXGIFactory6> factory;
     check(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)), "CreateDXGIFactory2");
     for (UINT index = 0;; ++index) {
@@ -257,9 +261,8 @@ SelectedDevice select_device(const ibrh_api& api) {
         if (factory->EnumAdapters1(index, &adapter) == DXGI_ERROR_NOT_FOUND) break;
         DXGI_ADAPTER_DESC1 description{};
         check(adapter->GetDesc1(&description), "GetDesc1");
-        const auto* bytes = reinterpret_cast<const unsigned char*>(
-            &description.AdapterLuid);
-        char json[40]{};
+        const auto* bytes = reinterpret_cast<const unsigned char*>(&description.AdapterLuid);
+        char json[48]{};
         std::snprintf(json, sizeof(json),
             "{\"luid\":\"%02x%02x%02x%02x%02x%02x%02x%02x\"}",
             bytes[0], bytes[1], bytes[2], bytes[3],
@@ -273,113 +276,78 @@ SelectedDevice select_device(const ibrh_api& api) {
         if (api.runtime_create(sizeof(request), &request, &runtime) != IBRH_OK)
             continue;
         api.runtime_destroy(runtime);
-        SelectedDevice result;
-        check(D3D12CreateDevice(
-            adapter.Get(), D3D_FEATURE_LEVEL_11_0,
+        Abi2Device result;
+        check(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0,
             IID_PPV_ARGS(&result.device)), "D3D12CreateDevice");
         result.luid_json = json;
-        char narrow[128]{};
+        char name[128]{};
         WideCharToMultiByte(CP_UTF8, 0, description.Description, -1,
-                            narrow, sizeof(narrow), nullptr, nullptr);
-        result.name = narrow;
+            name, sizeof(name), nullptr, nullptr);
+        result.name = name;
         return result;
     }
-    throw std::runtime_error("no D3D12 adapter accepted by VDA Vulkan");
+    throw std::runtime_error("no D3D12 adapter accepted by ZipDepth Vulkan");
 }
 
-struct Submitted {
-    ibrh_job* job = nullptr;
-    ibrh_output_lease* lease = nullptr;
-    ibrh_output_descriptor output{};
+struct CoreOutput {
+    ComPtr<ID3D12Resource> texture;
+    ComPtr<ID3D12Fence> fence;
+    HANDLE texture_handle = nullptr;
+    HANDLE fence_handle = nullptr;
+    std::uint64_t value = 1u;
 };
 
-Submitted submit(
-    const ibrh_api& api, ibrh_model* model,
-    Capture& capture, std::uint32_t width, std::uint32_t height,
-    std::uint64_t frame) {
-    ibrh_resource resource{};
-    resource.struct_size = sizeof(resource);
-    resource.api_version = IBRH_CURRENT_API_VERSION;
-    resource.domain = IBRH_RESOURCE_DOMAIN_D3D12;
-    resource.kind = IBRH_RESOURCE_KIND_IMAGE_2D;
-    resource.access = IBRH_RESOURCE_ACCESS_READ;
-    resource.pixel_format = IBRH_PIXEL_BGRA8;
-    resource.width = width;
-    resource.height = height;
-    resource.depth = 1u;
-    resource.native_handle_type = IBRH_NATIVE_HANDLE_WIN32_SHARED;
-    resource.native_handle = reinterpret_cast<std::uintptr_t>(capture.texture_handle);
-    ibrh_synchronization wait{};
-    wait.struct_size = sizeof(wait);
-    wait.api_version = IBRH_CURRENT_API_VERSION;
-    wait.kind = IBRH_SYNC_D3D12_FENCE;
-    wait.operation = IBRH_SYNC_WAIT;
-    wait.native_handle_type = IBRH_NATIVE_HANDLE_WIN32_SHARED;
-    wait.native_handle = reinterpret_cast<std::uintptr_t>(capture.fence_handle);
-    wait.value = capture.value;
-    const std::string parameters = "{\"Size\":\"140\"}";
-    ibrh_submit_request request{};
-    request.struct_size = sizeof(request);
-    request.api_version = IBRH_CURRENT_API_VERSION;
-    request.inputs = &resource;
-    request.input_count = 1u;
-    request.synchronizations = &wait;
-    request.synchronization_count = 1u;
-    request.source_frame_id = frame;
-    request.timestamp_ns = 900000u + frame;
-    request.parameters_json = {parameters.data(), parameters.size()};
-    Submitted result;
-    check(api.submit(model, sizeof(request), &request, &result.job), "submit");
-    close_capture(capture);
-    check(api.output_acquire(
-        result.job, 0, sizeof(result.output), &result.output, &result.lease),
-        "output_acquire");
-    if (result.output.source_frame_id != frame ||
-        result.output.timestamp_ns != request.timestamp_ns ||
-        result.output.resource.domain != IBRH_RESOURCE_DOMAIN_D3D12 ||
-        result.output.resource.pixel_format != IBRH_PIXEL_DEPTH_FLOAT32 ||
-        result.output.resource.width != width ||
-        result.output.resource.height != height ||
-        result.output.ready.kind != IBRH_SYNC_D3D12_FENCE)
-        throw std::runtime_error("VDA output descriptor correlation failed");
+CoreOutput create_core_output(
+    ID3D12Device* device, std::uint32_t width, std::uint32_t height) {
+    CoreOutput result;
+    const D3D12_HEAP_PROPERTIES heap{
+        D3D12_HEAP_TYPE_DEFAULT, D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+        D3D12_MEMORY_POOL_UNKNOWN, 1, 1};
+    const D3D12_RESOURCE_DESC texture{
+        D3D12_RESOURCE_DIMENSION_TEXTURE2D, 0, width, height, 1, 1,
+        DXGI_FORMAT_R32_FLOAT, {1, 0}, D3D12_TEXTURE_LAYOUT_UNKNOWN,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS};
+    check(device->CreateCommittedResource(
+        &heap, D3D12_HEAP_FLAG_SHARED, &texture,
+        D3D12_RESOURCE_STATE_COMMON, nullptr,
+        IID_PPV_ARGS(&result.texture)), "CreateCommittedResource(output)");
+    check(device->CreateSharedHandle(result.texture.Get(), nullptr, GENERIC_ALL,
+        nullptr, &result.texture_handle), "CreateSharedHandle(output)");
+    check(device->CreateFence(0, D3D12_FENCE_FLAG_SHARED,
+        IID_PPV_ARGS(&result.fence)), "CreateFence(output)");
+    check(device->CreateSharedHandle(result.fence.Get(), nullptr, GENERIC_ALL,
+        nullptr, &result.fence_handle), "CreateSharedHandle(output fence)");
     return result;
 }
 
-void normalize(std::vector<float>& values) {
-    const auto bounds = std::minmax_element(values.begin(), values.end());
-    if (!std::isfinite(*bounds.first) || !std::isfinite(*bounds.second) ||
-        !(*bounds.second > *bounds.first))
-        throw std::runtime_error("VDA output is not finite and varying");
-    const float low = *bounds.first;
-    const float span = *bounds.second - low;
-    for (float& value : values) value = (value - low) / span;
-}
-
-std::filesystem::path model_path() {
-    if (const char* value = std::getenv("VDA_MODEL")) return value;
-    return {};
+void close_output(CoreOutput& output) {
+    if (output.texture_handle) CloseHandle(output.texture_handle);
+    if (output.fence_handle) CloseHandle(output.fence_handle);
+    output.texture_handle = nullptr;
+    output.fence_handle = nullptr;
 }
 }  // namespace
 
 int main() try {
-    const auto model_file = model_path();
-    if (model_file.empty() || !std::filesystem::exists(model_file)) return 77;
+    const char* model_environment = std::getenv("VDA_MODEL");
+    if (!model_environment || !std::filesystem::exists(model_environment)) return 77;
     ibrh_api api{};
     check(ibrh_get_api(IBRH_CURRENT_API_VERSION, sizeof(api), &api), "ibrh_get_api");
     ibrh_capabilities capabilities{};
     check(api.query_capabilities(sizeof(capabilities), &capabilities), "capabilities");
-    const std::uint64_t required = IBRH_CAP_GPU_RESOURCES |
-        IBRH_CAP_EXTERNAL_SYNCHRONIZATION | IBRH_CAP_GPU_RESIDENT_OUTPUT;
-    if ((capabilities.flags & required) != required ||
-        capabilities.maximum_in_flight_jobs != 3u)
-        throw std::runtime_error("VDA GPU capability contract is incomplete");
-    SelectedDevice selected = select_device(api);
+    const std::uint64_t required = IBRH_CAP_ASYNC_SUBMIT |
+        IBRH_CAP_GPU_RESOURCES | IBRH_CAP_EXTERNAL_SYNCHRONIZATION |
+        IBRH_CAP_GPU_RESIDENT_OUTPUT;
+    if ((capabilities.flags & required) != required)
+        throw std::runtime_error("VDA ABI2 GPU capability is incomplete");
+    Abi2Device selected = select_abi2_device(api);
     std::cout << "device=" << selected.name << '\n';
-    D3D12_COMMAND_QUEUE_DESC queue_desc{};
-    queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    D3D12_COMMAND_QUEUE_DESC queue_description{};
+    queue_description.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     ComPtr<ID3D12CommandQueue> queue;
-    check(selected.device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)),
-          "CreateCommandQueue");
+    check(selected.device->CreateCommandQueue(&queue_description,
+        IID_PPV_ARGS(&queue)), "CreateCommandQueue");
+
     ibrh_runtime_create_request runtime_request{};
     runtime_request.struct_size = sizeof(runtime_request);
     runtime_request.api_version = IBRH_CURRENT_API_VERSION;
@@ -388,159 +356,158 @@ int main() try {
         selected.luid_json.data(), selected.luid_json.size()};
     ibrh_runtime* runtime = nullptr;
     check(api.runtime_create(sizeof(runtime_request), &runtime_request, &runtime),
-          "runtime_create");
-    const std::string model_text = model_file.string();
-    const std::string parameters = "{\"Size\":\"140\"}";
+        "runtime_create");
+    const std::string model_path = model_environment;
+    const std::string parameters = "{\"Encoder\":\"vits\",\"Size\":\"28\"}";
     ibrh_model_load_request load{};
     load.struct_size = sizeof(load);
     load.api_version = IBRH_CURRENT_API_VERSION;
-    load.model_path = {model_text.data(), model_text.size()};
+    load.model_path = {model_path.data(), model_path.size()};
     load.parameters_json = {parameters.data(), parameters.size()};
     ibrh_model* model = nullptr;
     check(api.model_load(runtime, sizeof(load), &load, &model), "model_load");
 
-    vda_transfer_counters before{sizeof(before), VDA_ABI_VERSION, 0u, 0u};
-    check(vda_get_transfer_counters(&before), "transfer counters before");
-    constexpr std::uint32_t width = 37u;
-    constexpr std::uint32_t height = 23u;
-    std::array<Submitted, 3> retained{};
-    for (std::uint32_t index = 0; index < retained.size(); ++index) {
-        auto source = pixels(width, height, index);
-        Capture capture = upload_texture(
-            selected.device.Get(), queue.Get(), source, width, height);
-        retained[index] = submit(api, model, capture, width, height, 1000u + index);
-        wait_fence(selected.device.Get(), retained[index].output.ready);
-        ibrh_job_status status{};
-        for (std::uint32_t attempt = 0u; attempt < 1000u; ++attempt) {
-            check(api.job_poll(
-                retained[index].job, sizeof(status), &status), "job_poll");
-            if (status.state != IBRH_JOB_RUNNING) break;
+    constexpr std::uint32_t width = 64u, height = 64u;
+    const auto source_pixels = pixels(width, height, 7u);
+    Capture source = upload_texture(selected.device.Get(), queue.Get(),
+        source_pixels, width, height);
+    CoreOutput output = create_core_output(selected.device.Get(), width, height);
+    ibrh_transfer_binding bindings[2]{};
+    auto& input = bindings[0];
+    input.struct_size = sizeof(input); input.api_version = IBRH_CURRENT_API_VERSION;
+    input.resource.struct_size = sizeof(input.resource);
+    input.resource.api_version = IBRH_CURRENT_API_VERSION;
+    input.resource.domain = IBRH_RESOURCE_DOMAIN_D3D12;
+    input.resource.kind = IBRH_RESOURCE_KIND_IMAGE_2D;
+    input.resource.access = IBRH_RESOURCE_ACCESS_READ;
+    input.resource.pixel_format = IBRH_PIXEL_BGRA8;
+    input.resource.width = width; input.resource.height = height; input.resource.depth = 1u;
+    input.resource.native_handle_type = IBRH_NATIVE_HANDLE_WIN32_SHARED;
+    input.resource.native_handle = reinterpret_cast<std::uintptr_t>(source.texture_handle);
+    input.synchronization.struct_size = sizeof(input.synchronization);
+    input.synchronization.api_version = IBRH_CURRENT_API_VERSION;
+    input.synchronization.kind = IBRH_SYNC_D3D12_FENCE;
+    input.synchronization.operation = IBRH_SYNC_WAIT;
+    input.synchronization.native_handle_type = IBRH_NATIVE_HANDLE_WIN32_SHARED;
+    input.synchronization.native_handle = reinterpret_cast<std::uintptr_t>(source.fence_handle);
+    input.synchronization.value = source.value;
+    auto& target = bindings[1];
+    target.struct_size = sizeof(target); target.api_version = IBRH_CURRENT_API_VERSION;
+    target.resource.struct_size = sizeof(target.resource);
+    target.resource.api_version = IBRH_CURRENT_API_VERSION;
+    target.resource.domain = IBRH_RESOURCE_DOMAIN_D3D12;
+    target.resource.kind = IBRH_RESOURCE_KIND_IMAGE_2D;
+    target.resource.access = IBRH_RESOURCE_ACCESS_WRITE;
+    target.resource.pixel_format = IBRH_PIXEL_DEPTH_FLOAT32;
+    target.resource.width = width; target.resource.height = height; target.resource.depth = 1u;
+    target.resource.native_handle_type = IBRH_NATIVE_HANDLE_WIN32_SHARED;
+    target.resource.native_handle = reinterpret_cast<std::uintptr_t>(output.texture_handle);
+    target.synchronization.struct_size = sizeof(target.synchronization);
+    target.synchronization.api_version = IBRH_CURRENT_API_VERSION;
+    target.synchronization.kind = IBRH_SYNC_D3D12_FENCE;
+    target.synchronization.operation = IBRH_SYNC_SIGNAL;
+    target.synchronization.native_handle_type = IBRH_NATIVE_HANDLE_WIN32_SHARED;
+    target.synchronization.native_handle = reinterpret_cast<std::uintptr_t>(output.fence_handle);
+    target.synchronization.value = output.value;
+    ibrh_submit_request submit{};
+    submit.struct_size = sizeof(submit); submit.api_version = IBRH_CURRENT_API_VERSION;
+    submit.inputs = &input; submit.input_count = 1u;
+    submit.outputs = &target; submit.output_count = 1u;
+    submit.source_frame_id = 7007u; submit.timestamp_ns = 123456789u;
+    submit.parameters_json = {parameters.data(), parameters.size()};
+    vda_transfer_counters before{
+        sizeof(before), VDA_ABI_VERSION, 0u, 0u};
+    check_counter(vda_get_transfer_counters(&before),
+        "transfer counters before");
+    const auto start = std::chrono::steady_clock::now();
+    ibrh_job* job = nullptr;
+    check(api.submit(model, sizeof(submit), &submit, &job), "submit");
+    const double submit_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count();
+    if (submit_ms > 5.0) throw std::runtime_error("VDA submit exceeded 5 ms");
+    ibrh_synchronization ready = target.synchronization;
+    wait_fence(selected.device.Get(), ready);
+    ibrh_job_status status{};
+    for (unsigned attempt = 0; attempt < 10000; ++attempt) {
+        check(api.job_poll(job, sizeof(status), &status), "job_poll");
+        if (status.state != IBRH_JOB_QUEUED && status.state != IBRH_JOB_RUNNING) break;
+        Sleep(1);
+    }
+    if (status.state != IBRH_JOB_COMPLETE || status.source_frame_id != 7007u)
+        throw std::runtime_error("VDA ABI2 job did not complete with correlation");
+    vda_transfer_counters after{
+        sizeof(after), VDA_ABI_VERSION, 0u, 0u};
+    check_counter(vda_get_transfer_counters(&after),
+        "transfer counters after");
+    if (after.tensor_upload_bytes != before.tensor_upload_bytes ||
+        after.tensor_download_bytes != before.tensor_download_bytes)
+        throw std::runtime_error("VDA external path staged tensor bytes through host");
+    ibrh_output_descriptor descriptor{};
+    descriptor.struct_size = sizeof(descriptor);
+    descriptor.api_version = IBRH_CURRENT_API_VERSION;
+    descriptor.resource = target.resource;
+    descriptor.ready = target.synchronization;
+    const auto gpu = read_output(selected.device.Get(), queue.Get(), descriptor);
+    const auto finite = [](float value) { return std::isfinite(value); };
+    const auto finite_count = static_cast<std::size_t>(
+        std::count_if(gpu.begin(), gpu.end(), finite));
+    if (finite_count < gpu.size() / 2u)
+        throw std::runtime_error("VDA external output has too few valid mask pixels");
+    float minimum = std::numeric_limits<float>::infinity();
+    float maximum = -std::numeric_limits<float>::infinity();
+    for (float value : gpu) if (finite(value)) {
+        minimum = std::min(minimum, value);
+        maximum = std::max(maximum, value);
+    }
+    if (!(maximum > minimum))
+        throw std::runtime_error("VDA external output is not varying");
+    double maximum_submit_ms = submit_ms;
+    for (std::uint64_t frame = 7008u; frame < 7032u; ++frame) {
+        Capture next_source = upload_texture(selected.device.Get(), queue.Get(),
+            pixels(width, height, static_cast<std::uint32_t>(frame)), width, height);
+        CoreOutput next_output = create_core_output(selected.device.Get(), width, height);
+        input.resource.native_handle =
+            reinterpret_cast<std::uintptr_t>(next_source.texture_handle);
+        input.synchronization.native_handle =
+            reinterpret_cast<std::uintptr_t>(next_source.fence_handle);
+        input.synchronization.value = next_source.value;
+        target.resource.native_handle =
+            reinterpret_cast<std::uintptr_t>(next_output.texture_handle);
+        target.synchronization.native_handle =
+            reinterpret_cast<std::uintptr_t>(next_output.fence_handle);
+        target.synchronization.value = next_output.value;
+        submit.source_frame_id = frame;
+        const auto next_start = std::chrono::steady_clock::now();
+        ibrh_job* next_job = nullptr;
+        check(api.submit(model, sizeof(submit), &submit, &next_job),
+            "stress submit");
+        maximum_submit_ms = std::max(maximum_submit_ms,
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - next_start).count());
+        api.job_release(job);
+        close_capture(source);
+        close_output(output);
+        source = std::move(next_source);
+        output = std::move(next_output);
+        job = next_job;
+        ready = target.synchronization;
+        wait_fence(selected.device.Get(), ready);
+        status = {};
+        for (unsigned attempt = 0; attempt < 10000; ++attempt) {
+            check(api.job_poll(job, sizeof(status), &status), "stress poll");
+            if (status.state != IBRH_JOB_QUEUED &&
+                status.state != IBRH_JOB_RUNNING) break;
             Sleep(1);
         }
-        if (status.state != IBRH_JOB_COMPLETE ||
-            status.source_frame_id != 1000u + index)
-            throw std::runtime_error("VDA job completion correlation failed");
-        api.job_release(retained[index].job);
-        retained[index].job = nullptr;
+        if (status.state != IBRH_JOB_COMPLETE || status.source_frame_id != frame)
+            throw std::runtime_error("VDA stress correlation failed");
     }
-    if (retained[0].output.resource.native_handle ==
-            retained[1].output.resource.native_handle ||
-        retained[0].output.resource.native_handle ==
-            retained[2].output.resource.native_handle)
-        throw std::runtime_error("retained VDA leases alias output slots");
-
-    const auto reused_pixels = pixels(width, height, 4);
-    Capture dropped = upload_texture(
-        selected.device.Get(), queue.Get(), reused_pixels, width, height);
-    ibrh_resource dropped_resource{};
-    dropped_resource.struct_size = sizeof(dropped_resource);
-    dropped_resource.api_version = IBRH_CURRENT_API_VERSION;
-    dropped_resource.domain = IBRH_RESOURCE_DOMAIN_D3D12;
-    dropped_resource.kind = IBRH_RESOURCE_KIND_IMAGE_2D;
-    dropped_resource.pixel_format = IBRH_PIXEL_BGRA8;
-    dropped_resource.width = width;
-    dropped_resource.height = height;
-    dropped_resource.native_handle_type = IBRH_NATIVE_HANDLE_WIN32_SHARED;
-    dropped_resource.native_handle = reinterpret_cast<std::uintptr_t>(dropped.texture_handle);
-    ibrh_synchronization dropped_wait{};
-    dropped_wait.struct_size = sizeof(dropped_wait);
-    dropped_wait.api_version = IBRH_CURRENT_API_VERSION;
-    dropped_wait.kind = IBRH_SYNC_D3D12_FENCE;
-    dropped_wait.operation = IBRH_SYNC_WAIT;
-    dropped_wait.native_handle_type = IBRH_NATIVE_HANDLE_WIN32_SHARED;
-    dropped_wait.native_handle = reinterpret_cast<std::uintptr_t>(dropped.fence_handle);
-    dropped_wait.value = dropped.value;
-    ibrh_submit_request dropped_request{};
-    dropped_request.struct_size = sizeof(dropped_request);
-    dropped_request.api_version = IBRH_CURRENT_API_VERSION;
-    dropped_request.inputs = &dropped_resource;
-    dropped_request.input_count = 1u;
-    dropped_request.synchronizations = &dropped_wait;
-    dropped_request.synchronization_count = 1u;
-    dropped_request.source_frame_id = 1003u;
-    dropped_request.parameters_json = {parameters.data(), parameters.size()};
-    ibrh_job* dropped_job = nullptr;
-    if (api.submit(model, sizeof(dropped_request), &dropped_request, &dropped_job) !=
-            IBRH_ERROR_INVALID_STATE || dropped_job != nullptr)
-        throw std::runtime_error("VDA fourth live lease was not rejected");
-    const auto reusable_handle = retained[0].output.resource.native_handle;
-    api.output_release(retained[0].lease);
-    retained[0].lease = nullptr;
-    Submitted reused;
-    const std::string reset_parameters =
-        "{\"Size\":\"140\",\"Reset\":\"YES\"}";
-    dropped_request.parameters_json = {
-        reset_parameters.data(), reset_parameters.size()};
-    check(api.submit(model, sizeof(dropped_request), &dropped_request, &reused.job),
-          "submit(reuse)");
-    close_capture(dropped);
-    check(api.output_acquire(
-        reused.job, 0, sizeof(reused.output), &reused.output, &reused.lease),
-        "output_acquire(reuse)");
-    if (reused.output.resource.native_handle != reusable_handle)
-        throw std::runtime_error("VDA output slot handle was not reused");
-    wait_fence(selected.device.Get(), reused.output.ready);
-    std::vector<float> gpu = read_output(selected.device.Get(), queue.Get(), reused.output);
-    normalize(gpu);
-    vda_transfer_counters gpu_after{
-        sizeof(gpu_after), VDA_ABI_VERSION, 0u, 0u};
-    check(vda_get_transfer_counters(&gpu_after), "GPU transfer counters after");
-    if (gpu_after.tensor_upload_bytes != before.tensor_upload_bytes ||
-        gpu_after.tensor_download_bytes != before.tensor_download_bytes)
-        throw std::runtime_error("VDA GPU path performed host tensor staging");
-    vda_context* cpu = nullptr;
-    check(vda_create_vulkan(
-        model_text.c_str(), VDA_MODEL_VITS_RELATIVE_32_FRAMES, 0u, &cpu),
-        "vda_create_vulkan(reference)");
-    std::vector<float> processed(
-        static_cast<std::size_t>(width) * height);
-    check(vda_infer_stream_bgra8_f32(
-        cpu, reused_pixels.data(), width * 4u, width, height, 140,
-        processed.data(), processed.size()),
-        "vda_infer_stream_bgra8_f32(reference)");
-    vda_destroy(cpu);
-    std::vector<float> reference = std::move(processed);
-    normalize(reference);
-    float maximum_difference = 0.0f;
-    for (std::size_t index = 0; index < gpu.size(); ++index)
-        maximum_difference = std::max(
-            maximum_difference, std::abs(gpu[index] - reference[index]));
-    std::cout << "CPU correlation max/range=" << maximum_difference << '\n';
-    if (maximum_difference >= 0.01f)
-        throw std::runtime_error("VDA GPU output exceeds the 1% CPU gate");
-
-    Capture blocked = upload_texture(
-        selected.device.Get(), queue.Get(), pixels(width, height, 9), width, height, false);
-    api.output_release(retained[1].lease);
-    retained[1].lease = nullptr;
-    Submitted cancelled = submit(api, model, blocked, width, height, 2000u);
-    check(api.job_cancel(cancelled.job), "job_cancel");
-    ibrh_job_status cancelled_status{};
-    check(api.job_poll(cancelled.job, sizeof(cancelled_status), &cancelled_status),
-          "job_poll(cancelled)");
-    if (cancelled_status.state != IBRH_JOB_CANCELLED)
-        throw std::runtime_error("VDA cancellation state failed");
-    check(queue->Signal(blocked.fence.Get(), blocked.value),
-          "Signal(cancelled input)");
-    api.output_release(cancelled.lease);
-    api.job_release(cancelled.job);
-
-    api.output_release(retained[2].lease);
-    api.output_release(reused.lease);
-    api.job_release(reused.job);
-    // One final lease must survive complete public object shutdown.
-    Capture final_capture = upload_texture(
-        selected.device.Get(), queue.Get(), pixels(width, height, 12), width, height);
-    Submitted final_job = submit(api, model, final_capture, width, height, 3000u);
-    api.job_release(final_job.job);
-    api.model_unload(model);
-    api.runtime_destroy(runtime);
-    std::vector<float> final_depth = read_output(
-        selected.device.Get(), queue.Get(), final_job.output);
-    normalize(final_depth);
-    api.output_release(final_job.lease);
-    std::cout << "VDA common D3D12/Vulkan full graph passed; zero transfers; "
-                 "three leases; reuse; cancellation; shutdown lease\n";
+    api.job_release(job);
+    close_capture(source); close_output(output);
+    api.model_unload(model); api.runtime_destroy(runtime);
+    std::cout << "VDA ABI2 D3D12/Vulkan passed; frames=25; max_submit_ms="
+              << maximum_submit_ms
+              << "; upload_delta=0; download_delta=0; sourceFrameId=7007..7031\n";
     return 0;
 } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

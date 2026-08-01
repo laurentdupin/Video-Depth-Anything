@@ -82,10 +82,13 @@ class ExternalJobImpl final : public ExternalJob {
 public:
     ExternalJobImpl(std::shared_ptr<ExternalGpu> owner,VulkanImage input,
         VulkanImage output,VulkanSubmission submission,
-        std::vector<std::shared_ptr<StreamEntry>> retained)
+        std::vector<std::shared_ptr<StreamEntry>> retained,
+        std::shared_ptr<std::mutex> record_mutex)
         :owner_(std::move(owner)),input_(std::move(input)),output_(std::move(output)),
-         submission_(std::move(submission)),retained_(std::move(retained)){}
+         submission_(std::move(submission)),retained_(std::move(retained)),
+         record_mutex_(std::move(record_mutex)){}
     ~ExternalJobImpl()override{try{submission_.wait();}catch(...){}
+        std::lock_guard<std::mutex> lock(*record_mutex_);
         submission_={};output_={};input_={};retained_.clear();}
     ExternalJobState state()const override{if(cancelled_.load())return ExternalJobState::cancelled;
         return submission_.ready()?ExternalJobState::complete:ExternalJobState::running;}
@@ -93,6 +96,7 @@ public:
 private:
     std::shared_ptr<ExternalGpu> owner_;VulkanImage input_,output_;
     VulkanSubmission submission_;std::vector<std::shared_ptr<StreamEntry>> retained_;
+    std::shared_ptr<std::mutex> record_mutex_;
     std::atomic<bool> cancelled_{false};
 };
 #endif
@@ -143,7 +147,7 @@ public:
             request.output_width,request.output_height,DXGI_FORMAT_R32_FLOAT,
             "OpenSharedHandle(VDA output)");
         try {
-            std::lock_guard<std::mutex> lock(record_mutex_);
+            std::lock_guard<std::mutex> lock(*record_mutex_);
             if (request.reset) reset_stream();
             if (!cache_.empty() && (width_ != request.width ||
                 height_ != request.height || size_ != request.process_resolution))
@@ -219,7 +223,7 @@ public:
                 });
             return std::make_shared<ExternalJobImpl>(
                 shared_from_this(),std::move(input),std::move(output),
-                std::move(submission),std::move(retained));
+                std::move(submission),std::move(retained),record_mutex_);
         } catch (...) { throw; }
 #endif
     }
@@ -238,7 +242,7 @@ private:
     std::uint32_t width_=0,height_=0,size_=0;
 #if defined(_WIN32)
     ComPtr<ID3D12Device> d3d12_;
-    std::mutex record_mutex_;
+    std::shared_ptr<std::mutex> record_mutex_=std::make_shared<std::mutex>();
 #endif
 };
 

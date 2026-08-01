@@ -1,0 +1,40 @@
+{
+  "date": "2026-08-01",
+  "familyId": "video-depth-anything",
+  "familyDisplayName": "Video Depth Anything",
+  "device": "AMD Radeon RX 9070",
+  "adapterLuid": "8ea8010000000000",
+  "apiVersion": "2.0",
+  "library": {
+    "path": "native/out/build/Release/video_depth_anything_native.dll",
+    "sha256": "b6dfce01f281c18fa5e0ecb9fe5e175b9a48d4284b66c22d892e779cd1e74579"
+  },
+  "numericalFixture": {
+    "sourceDimensions": [37, 29],
+    "processResolution": 28,
+    "relativeTolerance": "maximum absolute error <= 0.01 on normalized [0,1] depth",
+    "metricTolerance": "maximum per-pixel relative error <= 0.01 on raw positive metric depth",
+    "variants": [
+      {"model": "video_depth_anything_vits", "derivedSha256": "45bafba1dd6be93945f90969f022a43e7cb9ae22a105b6b5ffdaa5e08b7246bb", "maximumAbsoluteError": 0.00000780821, "meanAbsoluteError": 0.00000360525},
+      {"model": "video_depth_anything_vitb", "derivedSha256": "900b62c4ecef5cf6e4025b96b0f82c37e6c01732a712672a618958625320d88a", "maximumAbsoluteError": 0.0000509024, "meanAbsoluteError": 0.0000152275},
+      {"model": "video_depth_anything_vitl", "derivedSha256": "a071194f36b6ffb97a1affd889fa42b3fdcc5756cfbc451fa272d27743372937", "maximumAbsoluteError": 0.0000153482, "meanAbsoluteError": 0.00000363707},
+      {"model": "metric_video_depth_anything_vits", "derivedSha256": "20ae8b120d8824b1f0740d202c75cbecf6eb7ad9a8d68bc630cf8bf8bafbd60f", "maximumRelativeError": 0.00550073, "maximumAbsoluteErrorMetres": 0.0555935},
+      {"model": "metric_video_depth_anything_vitb", "derivedSha256": "740ee5bf8498a44a7c29e9a5a07bf0dd6f4b4743f384efdf8b97a66647c96da1", "maximumRelativeError": 0.00000668215, "maximumAbsoluteErrorMetres": 0.0000209808},
+      {"model": "metric_video_depth_anything_vitl", "derivedSha256": "6a6f0e40e7dcb9374ed3403ac78fbe31c154693799c0992dc1bbaa8819b4469c", "maximumRelativeError": 0.0000212277, "maximumAbsoluteErrorMetres": 0.0000631809}
+    ]
+  },
+  "externalResourceCanary": {
+    "commandTarget": "vda_d3d12_full_graph",
+    "frames": 25,
+    "sourceFrameIdRange": [7007, 7031],
+    "maximumSubmitReturnMs": 0.0075,
+    "tensorUploadByteDelta": 0,
+    "tensorDownloadByteDelta": 0,
+    "zeroHostTransfers": true,
+    "cleanReleaseAndShutdown": true
+  },
+  "productCanaries": [
+    {"variant": "vits", "outputs": 9, "measuredOutputs": 4, "sourceFrameId": 138, "dimensions": [2560, 1440], "maximumSubmitReturnMs": 1.037, "processFps": 436.0},
+    {"variant": "metric_vits", "outputs": 16, "measuredOutputs": 11, "sourceFrameId": 81, "dimensions": [2560, 1440], "maximumSubmitReturnMs": 1.430, "processFps": 403.1}
+  ]
+}
