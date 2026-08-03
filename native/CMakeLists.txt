@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(video_depth_anything_native VERSION 0.1.0 LANGUAGES C CXX)
+include("${CMAKE_CURRENT_LIST_DIR}/../../native_support/InferBridgeNativeHarnessSupport.cmake")
+link_libraries(InferBridge::NativeHarnessSupport)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)

@@ -11,6 +11,7 @@
 #include "operators.h"
 #include "temporal_gpu.h"
 #include "vulkan.h"
+#include "inferbridge/native_harness_resource_lifetime.h"
 
 #include <array>
 #include <atomic>
@@ -83,20 +84,22 @@ public:
     ExternalJobImpl(std::shared_ptr<ExternalGpu> owner,VulkanImage input,
         VulkanImage output,VulkanSubmission submission,
         std::vector<std::shared_ptr<StreamEntry>> retained,
-        std::shared_ptr<std::mutex> record_mutex)
+        inferbridge::native_harness::ResourceLifetimeDomainPtr lifetime)
         :owner_(std::move(owner)),input_(std::move(input)),output_(std::move(output)),
          submission_(std::move(submission)),retained_(std::move(retained)),
-         record_mutex_(std::move(record_mutex)){}
-    ~ExternalJobImpl()override{try{submission_.wait();}catch(...){}
-        std::lock_guard<std::mutex> lock(*record_mutex_);
-        submission_={};output_={};input_={};retained_.clear();}
+          lifetime_(std::move(lifetime)){}
+    ~ExternalJobImpl()override{
+        inferbridge::native_harness::wait_then_retire(
+            lifetime_, submission_, [this] {
+                output_={};input_={};retained_.clear();
+            });}
     ExternalJobState state()const override{if(cancelled_.load())return ExternalJobState::cancelled;
         return submission_.ready()?ExternalJobState::complete:ExternalJobState::running;}
     void cancel()override{cancelled_.store(true);}
 private:
     std::shared_ptr<ExternalGpu> owner_;VulkanImage input_,output_;
     VulkanSubmission submission_;std::vector<std::shared_ptr<StreamEntry>> retained_;
-    std::shared_ptr<std::mutex> record_mutex_;
+    inferbridge::native_harness::ResourceLifetimeDomainPtr lifetime_;
     std::atomic<bool> cancelled_{false};
 };
 #endif
@@ -147,7 +150,7 @@ public:
             request.output_width,request.output_height,DXGI_FORMAT_R32_FLOAT,
             "OpenSharedHandle(VDA output)");
         try {
-            std::lock_guard<std::mutex> lock(*record_mutex_);
+            auto lifetime_guard = lifetime_->acquire();
             if (request.reset) reset_stream();
             if (!cache_.empty() && (width_ != request.width ||
                 height_ != request.height || size_ != request.process_resolution))
@@ -223,7 +226,7 @@ public:
                 });
             return std::make_shared<ExternalJobImpl>(
                 shared_from_this(),std::move(input),std::move(output),
-                std::move(submission),std::move(retained),record_mutex_);
+                std::move(submission),std::move(retained),lifetime_);
         } catch (...) { throw; }
 #endif
     }
@@ -242,7 +245,8 @@ private:
     std::uint32_t width_=0,height_=0,size_=0;
 #if defined(_WIN32)
     ComPtr<ID3D12Device> d3d12_;
-    std::shared_ptr<std::mutex> record_mutex_=std::make_shared<std::mutex>();
+    inferbridge::native_harness::ResourceLifetimeDomainPtr lifetime_ =
+        inferbridge::native_harness::make_resource_lifetime_domain();
 #endif
 };
 
