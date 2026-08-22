@@ -25,6 +25,7 @@ struct ibrh_runtime {
     std::string error;
     int32_t vulkan_device_index = 0;
     uint64_t adapter_luid = 0u;
+    bool force_host_transfers = false;
 };
 
 struct ibrh_job;
@@ -285,6 +286,10 @@ ibrh_result IBRH_CALL runtime_create(
     auto* runtime = new (std::nothrow) ibrh_runtime();
     if (runtime == nullptr) return IBRH_ERROR_INTERNAL;
     const std::string device = copy_string(request->requested_device_json);
+    std::string transfer_mode;
+    runtime->force_host_transfers =
+        json_string(device, "transfer_mode", transfer_mode) &&
+        transfer_mode == "host";
     uint32_t index = 0u;
     if (json_uint(device, "index", index)) {
         if (index > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
@@ -361,7 +366,7 @@ ibrh_result IBRH_CALL model_load(
             "VDA Size must be a multiple of 14 up to 4096");
     }
 #if defined(VDA_WITH_VULKAN) && defined(_WIN32)
-    if (runtime->adapter_luid != 0u) {
+    if (runtime->adapter_luid != 0u && !runtime->force_host_transfers) {
         try {
             model->external_gpu = vda_native::create_external_gpu(
                 path, static_cast<uint32_t>(runtime->vulkan_device_index),
