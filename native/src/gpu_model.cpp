@@ -19,7 +19,8 @@ bool use_half_weight(std::string_view name) {
     if (!weight) {
         return false;
     }
-    if (name.rfind("depth_head.", 0) == 0) {
+    if (name.rfind("head.", 0) == 0 &&
+        name.rfind("head.temporal.", 0) != 0) {
         return true;
     }
     if (name.rfind("pretrained.blocks.", 0) != 0) {
@@ -186,7 +187,8 @@ void GpuModel::retain_transformer_precision(bool half_weight) {
 void GpuModel::retain_dpt_precision(bool half_weight) {
     for (auto& entry : tensors_) {
         const std::string_view name = entry.first;
-        if (name.rfind("depth_head.", 0) != 0 ||
+        if (name.rfind("head.", 0) != 0 ||
+            name.rfind("head.temporal.", 0) == 0 ||
             name.size() < 7 ||
             name.substr(name.size() - 7) != ".weight") {
             continue;

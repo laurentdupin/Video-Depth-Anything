@@ -1,5 +1,6 @@
 #include "dpt_gpu.h"
 #include "temporal_gpu.h"
+#include "inferbridge/native_harness_precision.h"
 
 #include <algorithm>
 #include <array>
@@ -43,6 +44,7 @@ VdaGpuDpt::VdaGpuDpt(
     std::copy(
         config.project_channels.begin(), config.project_channels.end(),
         project_channels_);
+    convolution_half_weight_ = inferbridge::native::select_fp16_weights(false);
     convolution_block_selected_ = true;
 }
 
@@ -133,11 +135,9 @@ void VdaGpuDpt::select_convolution_block() {
             best_time = median;
         }
     }
-    Candidate* best =
-        features_ >= 256 &&
-            best_half_time < best_fp32_time * 0.96
-        ? best_half
-        : best_fp32;
+    Candidate* best = inferbridge::native::select_fp16_weights(
+        features_ >= 256 && best_half_time < best_fp32_time * 0.96)
+        ? best_half : best_fp32;
     convolution_block8_ = best->block8;
     convolution_half_weight_ = best->half_weight;
     weights_.retain_dpt_precision(convolution_half_weight_);

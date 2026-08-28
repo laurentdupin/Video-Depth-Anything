@@ -1,4 +1,5 @@
 #include "encoder_gpu.h"
+#include "inferbridge/native_harness_precision.h"
 
 #include <algorithm>
 #include <array>
@@ -34,6 +35,7 @@ VdaGpuEncoder::VdaGpuEncoder(
     heads_ = config.heads;
     blocks_ = config.blocks;
     std::copy(config.captures.begin(), config.captures.end(), capture_);
+    linear_half_weight_ = inferbridge::native::select_fp16_weights(false);
     linear_tile_selected_ = true;
     if (weights_.tensor("pretrained.cls_token").elements != embedding_ ||
         weights_.tensor("pretrained.pos_embed").elements !=
@@ -157,10 +159,8 @@ void VdaGpuEncoder::select_linear_tile() {
             best_time = median;
         }
     }
-    Candidate* best =
-        best_half_time < best_fp32_time * 0.96
-        ? best_half
-        : best_fp32;
+    Candidate* best = inferbridge::native::select_fp16_weights(
+        best_half_time < best_fp32_time * 0.96) ? best_half : best_fp32;
     linear_block16_ = best->block16;
     linear_half_weight_ = best->half_weight;
     weights_.retain_transformer_precision(linear_half_weight_);
@@ -291,7 +291,7 @@ EncoderOutput VdaGpuEncoder::forward_batch(
             embedding_,
             frames);
     });
-    const bool half_attention = false;
+    const bool half_attention = inferbridge::native::select_fp16_weights(false);
     const VkDeviceSize attention_score_bytes = half_attention
         ? std::uint64_t(frames) * heads_ * tokens *
             ((std::uint64_t(tokens) + 1) / 2) *
