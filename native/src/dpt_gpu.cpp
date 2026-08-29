@@ -44,7 +44,7 @@ VdaGpuDpt::VdaGpuDpt(
     std::copy(
         config.project_channels.begin(), config.project_channels.end(),
         project_channels_);
-    convolution_half_weight_ = inferbridge::native::select_fp16_weights(false);
+    convolution_half_weight_ = weights_.select_fp16(false);
     convolution_block_selected_ = true;
 }
 
@@ -135,7 +135,7 @@ void VdaGpuDpt::select_convolution_block() {
             best_time = median;
         }
     }
-    Candidate* best = inferbridge::native::select_fp16_weights(
+    Candidate* best = weights_.select_fp16(
         features_ >= 256 && best_half_time < best_fp32_time * 0.96)
         ? best_half : best_fp32;
     convolution_block8_ = best->block8;

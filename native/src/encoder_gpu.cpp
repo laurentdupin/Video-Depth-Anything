@@ -35,8 +35,13 @@ VdaGpuEncoder::VdaGpuEncoder(
     heads_ = config.heads;
     blocks_ = config.blocks;
     std::copy(config.captures.begin(), config.captures.end(), capture_);
-    linear_half_weight_ = inferbridge::native::select_fp16_weights(false);
+    linear_half_weight_ = weights_.select_fp16(false);
     linear_tile_selected_ = true;
+    if (weights_.uses_int8_weights()) {
+        linear_block16_ = false;
+        linear_half_weight_ = false;
+        weights_.retain_transformer_precision(false);
+    }
     if (weights_.tensor("pretrained.cls_token").elements != embedding_ ||
         weights_.tensor("pretrained.pos_embed").elements !=
             std::uint64_t(1370) * embedding_) {
@@ -159,7 +164,7 @@ void VdaGpuEncoder::select_linear_tile() {
             best_time = median;
         }
     }
-    Candidate* best = inferbridge::native::select_fp16_weights(
+    Candidate* best = weights_.select_fp16(
         best_half_time < best_fp32_time * 0.96) ? best_half : best_fp32;
     linear_block16_ = best->block16;
     linear_half_weight_ = best->half_weight;
@@ -171,6 +176,23 @@ const VulkanBuffer& VdaGpuEncoder::linear_weight(
     const std::string& name) const {
     const GpuTensor& tensor = weights_.tensor(name);
     return linear_half_weight_ ? tensor.half_buffer : tensor.buffer;
+}
+
+void VdaGpuEncoder::linear(
+    VulkanBuffer& output, const VulkanBuffer& input,
+    const std::string& weight_name, const std::string& bias_name,
+    std::uint32_t rows, std::uint32_t input_columns,
+    std::uint32_t output_columns, bool gelu) {
+    const GpuTensor& tensor = weights_.tensor(weight_name);
+    if (weights_.uses_int8_weights()) {
+        operators_.linear_int8(output, input, tensor.int8_buffer,
+            tensor.int8_scales, buffer(weights_, bias_name), rows,
+            input_columns, output_columns, gelu);
+    } else {
+        operators_.linear(output, input, linear_weight(weight_name),
+            buffer(weights_, bias_name), rows, input_columns,
+            output_columns, gelu, linear_block16_, linear_half_weight_);
+    }
 }
 
 bool VdaGpuEncoder::select_half_attention(
@@ -291,7 +313,8 @@ EncoderOutput VdaGpuEncoder::forward_batch(
             embedding_,
             frames);
     });
-    const bool half_attention = inferbridge::native::select_fp16_weights(false);
+    const bool half_attention = weights_.uses_int8_weights()
+        ? false : weights_.select_fp16(false);
     const VkDeviceSize attention_score_bytes = half_attention
         ? std::uint64_t(frames) * heads_ * tokens *
             ((std::uint64_t(tokens) + 1) / 2) *
@@ -329,17 +352,10 @@ EncoderOutput VdaGpuEncoder::forward_batch(
                 frames * tokens,
                 embedding_,
                 1.0e-6f);
-            operators_.linear(
-                qkv,
-                normalized,
-                linear_weight(block_name(block, ".attn.qkv.weight")),
-                buffer(weights_, block_name(block, ".attn.qkv.bias")),
-                frames * tokens,
-                embedding_,
-                embedding_ * 3,
-                false,
-                linear_block16_,
-                linear_half_weight_);
+            linear(qkv, normalized,
+                block_name(block, ".attn.qkv.weight"),
+                block_name(block, ".attn.qkv.bias"),
+                frames * tokens, embedding_, embedding_ * 3);
             operators_.attention_head64(
                 attention,
                 qkv,
@@ -348,17 +364,10 @@ EncoderOutput VdaGpuEncoder::forward_batch(
                 &attention_scores,
                 half_attention,
                 frames);
-            operators_.linear(
-                query,
-                attention,
-                linear_weight(block_name(block, ".attn.proj.weight")),
-                buffer(weights_, block_name(block, ".attn.proj.bias")),
-                frames * tokens,
-                embedding_,
-                embedding_,
-                false,
-                linear_block16_,
-                linear_half_weight_);
+            linear(query, attention,
+                block_name(block, ".attn.proj.weight"),
+                block_name(block, ".attn.proj.bias"),
+                frames * tokens, embedding_, embedding_);
             operators_.add_scaled(
                 next,
                 current,
@@ -376,28 +385,14 @@ EncoderOutput VdaGpuEncoder::forward_batch(
                 frames * tokens,
                 embedding_,
                 1.0e-6f);
-            operators_.linear(
-                hidden,
-                normalized,
-                linear_weight(block_name(block, ".mlp.fc1.weight")),
-                buffer(weights_, block_name(block, ".mlp.fc1.bias")),
-                frames * tokens,
-                embedding_,
-                embedding_ * 4,
-                true,
-                linear_block16_,
-                linear_half_weight_);
-            operators_.linear(
-                query,
-                hidden,
-                linear_weight(block_name(block, ".mlp.fc2.weight")),
-                buffer(weights_, block_name(block, ".mlp.fc2.bias")),
-                frames * tokens,
-                embedding_ * 4,
-                embedding_,
-                false,
-                linear_block16_,
-                linear_half_weight_);
+            linear(hidden, normalized,
+                block_name(block, ".mlp.fc1.weight"),
+                block_name(block, ".mlp.fc1.bias"),
+                frames * tokens, embedding_, embedding_ * 4, true);
+            linear(query, hidden,
+                block_name(block, ".mlp.fc2.weight"),
+                block_name(block, ".mlp.fc2.bias"),
+                frames * tokens, embedding_ * 4, embedding_);
             operators_.add_scaled(
                 next,
                 current,

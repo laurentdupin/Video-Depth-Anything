@@ -82,6 +82,13 @@ if(VDA_WITH_VULKAN)
             reduce_minmax normalize_depth_image copy_depth_image)
         vda_compile_shader(${SHADER})
     endforeach()
+    foreach(SHARED_SHADER quantize_rows_int8 linear_int8_tiled)
+        inferbridge_compile_native_support_shader(
+            NAME "${SHARED_SHADER}" PREFIX vda
+            GENERATED_DIR "${VDA_GENERATED_DIR}"
+            EMBED_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_binary.cmake"
+            OUT_VAR VDA_SHADER_HEADERS)
+    endforeach()
 endif()
 
 add_library(video_depth_anything_native SHARED

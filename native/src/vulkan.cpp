@@ -399,6 +399,10 @@ VulkanContext::VulkanContext(
     VkPhysicalDeviceTimelineSemaphoreFeatures timeline_features{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
     };
+    VkPhysicalDeviceShaderIntegerDotProductFeatures integer_dot_features{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_FEATURES,
+    };
+    timeline_features.pNext = &integer_dot_features;
     VkPhysicalDeviceFeatures2 features2{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
         &timeline_features,
@@ -406,6 +410,20 @@ VulkanContext::VulkanContext(
     vkGetPhysicalDeviceFeatures2(physical_device_, &features2);
     external_capabilities_.timeline_semaphore =
         timeline_features.timelineSemaphore == VK_TRUE;
+    VkPhysicalDeviceShaderIntegerDotProductProperties integer_dot_properties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_PROPERTIES,
+    };
+    VkPhysicalDeviceProperties2 integer_dot_properties2{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        &integer_dot_properties,
+    };
+    vkGetPhysicalDeviceProperties2(physical_device_, &integer_dot_properties2);
+    packed_int8_dot_supported_ =
+        integer_dot_features.shaderIntegerDotProduct == VK_TRUE &&
+        integer_dot_properties
+            .integerDotProduct4x8BitPackedSignedAccelerated == VK_TRUE;
+    integer_dot_features.shaderIntegerDotProduct =
+        packed_int8_dot_supported_ ? VK_TRUE : VK_FALSE;
     const VkDeviceCreateInfo device_info{
         VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         &timeline_features,

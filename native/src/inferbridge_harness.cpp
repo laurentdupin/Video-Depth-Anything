@@ -2,6 +2,7 @@
 #include "inferbridge_harness.h"
 
 #include "video_depth_anything_native.h"
+#include "inferbridge/native_harness_precision.h"
 #include "model.h"
 #include "model_config.h"
 #if defined(VDA_WITH_VULKAN)
@@ -334,6 +335,13 @@ ibrh_result IBRH_CALL model_load(
             "VDA model path is missing");
     const std::string path = copy_string(request->model_path);
     const std::string parameters = copy_string(request->parameters_json);
+    inferbridge::native::Precision precision;
+    try {
+        precision = inferbridge::native::precision_from_parameters_json(parameters);
+    } catch (const std::exception& error) {
+        return fail(runtime, IBRH_ERROR_INVALID_ARGUMENT, error.what());
+    }
+    const inferbridge::native::ScopedPrecisionRequest precision_scope(precision);
     auto* model = new (std::nothrow) ibrh_model();
     if (model == nullptr) return IBRH_ERROR_INTERNAL;
     model->runtime = runtime;
@@ -450,7 +458,7 @@ ibrh_result IBRH_CALL submit(ibrh_model* model,size_t n,const ibrh_submit_reques
  if(occupied>=3u)return IBRH_ERROR_INVALID_STATE;
  auto*j=new(std::nothrow)ibrh_job();if(!j){model->occupied_slots->fetch_sub(1u);return IBRH_ERROR_INTERNAL;}
  j->occupied_slots=model->occupied_slots;j->source_frame_id=r->source_frame_id;j->timestamp_ns=r->timestamp_ns;j->width=i.width;j->height=i.height;
- j->request={static_cast<uintptr_t>(i.native_handle),i.width,i.height,size,static_cast<uintptr_t>(s.synchronization.native_handle),s.synchronization.value,static_cast<uintptr_t>(o.native_handle),o.width,o.height,static_cast<uintptr_t>(t.synchronization.native_handle),t.synchronization.value,r->source_frame_id,r->timestamp_ns,reset_stream};
+ j->request={static_cast<uintptr_t>(i.native_handle),i.auxiliary_handle,i.width,i.height,size,static_cast<uintptr_t>(s.synchronization.native_handle),s.synchronization.value,static_cast<uintptr_t>(o.native_handle),o.auxiliary_handle,o.width,o.height,static_cast<uintptr_t>(t.synchronization.native_handle),t.synchronization.value,r->source_frame_id,r->timestamp_ns,reset_stream};
  {std::lock_guard<std::mutex>l(model->queue_mutex);if(model->stopping){release_job(j);return IBRH_ERROR_INVALID_STATE;}retain_job(j);model->queue.push_back(j);}
  model->queue_condition.notify_one();*out=j;return IBRH_OK;}
 #endif
