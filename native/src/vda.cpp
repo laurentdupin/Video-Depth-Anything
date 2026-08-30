@@ -4,6 +4,9 @@
 #include "encoder_cpu.h"
 #include "model.h"
 #include "model_config.h"
+#if defined(VDA_WITH_METAL)
+#include "metal_executor.h"
+#endif
 #if defined(VDA_WITH_VULKAN)
 #include "dpt_gpu.h"
 #include "encoder_gpu.h"
@@ -32,6 +35,9 @@ struct vda_stream_entry {
 struct vda_context {
     const vda_native::ModelConfig* config = nullptr;
     std::unique_ptr<vda_native::ModelFile> model;
+#if defined(VDA_WITH_METAL)
+    std::unique_ptr<vda_native::MetalExecutor> metal;
+#endif
 #if defined(VDA_WITH_VULKAN)
     std::unique_ptr<vda_native::VulkanContext> vulkan;
     std::unique_ptr<vda_native::GpuModel> gpu_model;
@@ -174,7 +180,7 @@ uint32_t VDA_CALL vda_abi_version(void) {
 }
 
 const char* VDA_CALL vda_version_string(void) {
-    return "0.4.0-streaming-cpu-vulkan-full-graph";
+    return "0.5.0-streaming-cpu-vulkan-metal-full-graph";
 }
 
 const char* VDA_CALL vda_status_string(vda_status status) {
@@ -222,7 +228,25 @@ vda_status VDA_CALL vda_create_vulkan(
     vda_model_kind model,
     uint32_t device_index,
     vda_context** context) {
-#if !defined(VDA_WITH_VULKAN)
+#if defined(VDA_WITH_METAL)
+    (void)device_index;
+    if (!context) {
+        return fail(VDA_STATUS_INVALID_ARGUMENT, "context is null");
+    }
+    *context = nullptr;
+    if (!model_path_utf8 || model_path_utf8[0] == '\0') {
+        return fail(VDA_STATUS_INVALID_ARGUMENT, "invalid create options");
+    }
+    return protect([&] {
+        auto result = std::make_unique<vda_context>();
+        result->config = &vda_native::model_config(model);
+        result->model = std::make_unique<vda_native::ModelFile>(
+            model_path_utf8, model);
+        result->metal = std::make_unique<vda_native::MetalExecutor>(
+            *result->model, *result->config);
+        *context = result.release();
+    });
+#elif !defined(VDA_WITH_VULKAN)
     (void)model_path_utf8;
     (void)model;
     (void)device_index;
@@ -294,6 +318,16 @@ vda_status VDA_CALL vda_infer_tensor_f32(
             "invalid 32-frame tensor inference input");
     }
     return protect([&] {
+#if defined(VDA_WITH_METAL)
+        if (context->metal) {
+            context->metal->infer_tensor(
+                normalized_rgb_tchw,
+                static_cast<std::uint32_t>(frames),
+                static_cast<std::uint32_t>(width),
+                static_cast<std::uint32_t>(height), depth_thw);
+            return;
+        }
+#endif
 #if defined(VDA_WITH_VULKAN)
         if (context->dpt) {
             const std::uint64_t input_elements =
@@ -339,6 +373,13 @@ vda_status VDA_CALL vda_stream_reset(
             VDA_STATUS_INVALID_ARGUMENT,
             "invalid stream reset context");
     }
+#if defined(VDA_WITH_METAL)
+    if (context->metal) {
+        context->metal->reset_stream();
+        last_error.clear();
+        return VDA_STATUS_OK;
+    }
+#endif
 #if !defined(VDA_WITH_VULKAN)
     return fail(
         VDA_STATUS_UNSUPPORTED,
@@ -395,6 +436,28 @@ vda_status VDA_CALL vda_infer_stream_bgra8_f32(
             VDA_STATUS_INVALID_ARGUMENT,
             "invalid streaming BGRA inference input");
     }
+#if defined(VDA_WITH_METAL)
+    if (context->metal) {
+        return protect([&] {
+            const std::uint32_t network_size =
+                static_cast<std::uint32_t>(input_size);
+            std::vector<float> prepared = preprocess_stream_bgra(
+                bgra, bgra_stride_bytes,
+                static_cast<std::uint32_t>(width),
+                static_cast<std::uint32_t>(height), network_size);
+            std::vector<float> network_depth(
+                static_cast<std::size_t>(
+                    std::uint64_t(network_size) * network_size));
+            context->metal->infer_stream(
+                prepared.data(), network_size, network_depth.data());
+            resize_stream_depth(
+                network_depth, network_size, depth,
+                static_cast<std::uint32_t>(width),
+                static_cast<std::uint32_t>(height),
+                !context->config->metric);
+        });
+    }
+#endif
 #if !defined(VDA_WITH_VULKAN)
     return fail(
         VDA_STATUS_UNSUPPORTED,

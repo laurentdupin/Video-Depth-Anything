@@ -18,6 +18,15 @@ endif()
 
 option(VDA_WITH_VULKAN
     "Build the dependency-free Vulkan executor" ON)
+option(VDA_WITH_METAL
+    "Build the native Metal executor" ${APPLE})
+
+if(VDA_WITH_METAL)
+    if(NOT APPLE)
+        message(FATAL_ERROR "VDA_WITH_METAL requires Apple platforms")
+    endif()
+    enable_language(OBJCXX)
+endif()
 
 if(VDA_WITH_VULKAN)
     find_package(Vulkan REQUIRED COMPONENTS glslc)
@@ -98,6 +107,18 @@ add_library(video_depth_anything_native SHARED
     src/encoder_cpu.cpp
     src/temporal_cpu.cpp
     src/dpt_cpu.cpp)
+if(VDA_WITH_METAL)
+    target_sources(video_depth_anything_native PRIVATE
+        src/metal_executor.mm)
+    target_link_libraries(video_depth_anything_native PRIVATE
+        "-framework Foundation"
+        "-framework Metal"
+        "-framework MetalPerformanceShadersGraph")
+    target_compile_definitions(
+        video_depth_anything_native PRIVATE VDA_WITH_METAL=1)
+    set_source_files_properties(src/metal_executor.mm PROPERTIES
+        COMPILE_OPTIONS "-fobjc-arc")
+endif()
 if(VDA_WITH_VULKAN)
     target_sources(video_depth_anything_native PRIVATE
         src/vulkan.cpp
@@ -165,8 +186,14 @@ add_executable(vda_full_graph_probe
 target_link_libraries(
     vda_full_graph_probe PRIVATE video_depth_anything_native)
 target_include_directories(vda_full_graph_probe PRIVATE include)
+
+add_executable(vda_stream_probe tools/stream_probe.cpp)
+target_link_libraries(
+    vda_stream_probe PRIVATE video_depth_anything_native)
+target_include_directories(vda_stream_probe PRIVATE include)
 if(MSVC)
     target_compile_options(vda_full_graph_probe PRIVATE /W4 /permissive-)
+    target_compile_options(vda_stream_probe PRIVATE /W4 /permissive-)
 endif()
 
 include(CTest)
