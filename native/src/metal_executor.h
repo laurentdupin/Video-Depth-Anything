@@ -2,6 +2,7 @@
 
 #include "model.h"
 #include "model_config.h"
+#include "external_gpu.h"
 
 #include <cstdint>
 #include <memory>
@@ -26,6 +27,8 @@ public:
         const float* normalized_rgb_chw,
         std::uint32_t size,
         float* depth_hw);
+    std::shared_ptr<ExternalJob> submit_texture(
+        const ExternalTextureRequest& request);
 
 private:
     class Impl;

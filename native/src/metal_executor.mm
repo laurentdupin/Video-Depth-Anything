@@ -1,4 +1,5 @@
 #include "metal_executor.h"
+#include "inferbridge/native_harness_metal_texture.h"
 #include "inferbridge/native_harness_precision.h"
 
 #import <Foundation/Foundation.h>
@@ -534,6 +535,22 @@ struct Plan {
 };
 struct StreamEntry {
     std::array<std::vector<float>, 8> attention;
+    std::array<id<MTLBuffer>, 8> metal_attention{};
+};
+
+class MetalExternalJob final : public ExternalJob {
+public:
+    explicit MetalExternalJob(
+        std::shared_ptr<inferbridge::native_harness::metal::Submission> value)
+        : submission_(std::move(value)) {}
+    ExternalJobState state() const override {
+        if (submission_->cancelled()) return ExternalJobState::cancelled;
+        return submission_->complete() ? ExternalJobState::complete :
+            ExternalJobState::running;
+    }
+    void cancel() override { submission_->cancel(); }
+private:
+    std::shared_ptr<inferbridge::native_harness::metal::Submission> submission_;
 };
 
 }  // namespace
@@ -554,6 +571,7 @@ public:
         graph_device_ = [MPSGraphDevice deviceWithMTLDevice:device_];
         if (queue_ == nil || graph_device_ == nil)
             throw std::runtime_error("could not initialize VDA Metal");
+        create_texture_pipelines();
     }
 
     void reset_stream() {
@@ -624,7 +642,271 @@ public:
         }
     }
 
+    std::shared_ptr<ExternalJob> submit_texture(
+        const ExternalTextureRequest& request) {
+        if (!request.shared_texture_handle || !request.output_texture_handle ||
+            !request.signal_fence_handle || !request.signal_fence_value ||
+            !request.width || !request.height || !request.process_resolution ||
+            request.process_resolution % 14u != 0u ||
+            request.output_width != request.width ||
+            request.output_height != request.height)
+            throw std::invalid_argument("invalid VDA Metal texture request");
+        inferbridge::native_harness::metal::Prepared prepared;
+        prepared.input_texture = (__bridge id<MTLTexture>)(
+            reinterpret_cast<void*>(request.shared_texture_handle));
+        prepared.output_texture = (__bridge id<MTLTexture>)(
+            reinterpret_cast<void*>(request.output_texture_handle));
+        prepared.wait_event = request.wait_fence_handle ?
+            (__bridge id<MTLSharedEvent>)(reinterpret_cast<void*>(
+                request.wait_fence_handle)) : nil;
+        prepared.signal_event = (__bridge id<MTLSharedEvent>)(
+            reinterpret_cast<void*>(request.signal_fence_handle));
+        prepared.signal_value = request.signal_fence_value;
+        if (prepared.input_texture.device.registryID != device_.registryID ||
+            prepared.output_texture.device.registryID != device_.registryID ||
+            prepared.input_texture.textureType != MTLTextureType2D ||
+            prepared.input_texture.width != request.width ||
+            prepared.input_texture.height != request.height ||
+            prepared.input_texture.pixelFormat != MTLPixelFormatBGRA8Unorm ||
+            prepared.output_texture.textureType != MTLTextureType2D ||
+            prepared.output_texture.width != request.output_width ||
+            prepared.output_texture.height != request.output_height ||
+            prepared.output_texture.pixelFormat != MTLPixelFormatR32Float)
+            throw std::invalid_argument("VDA Metal texture descriptor mismatch");
+        std::lock_guard<std::mutex> guard(mutex_);
+        @autoreleasepool {
+            if (request.reset) {
+                cache_.clear(); stream_id_ = -1; stream_size_ = 0;
+            }
+            const std::uint32_t size = request.process_resolution;
+            if (!cache_.empty() && stream_size_ != size)
+                throw std::invalid_argument(
+                    "VDA Metal stream size changed without reset");
+            id<MTLBuffer> input = [device_ newBufferWithLength:
+                static_cast<NSUInteger>(3ull * size * size * sizeof(float))
+                options:MTLResourceStorageModePrivate];
+            if (!input) throw std::bad_alloc();
+            id<MTLCommandBuffer> preprocess = [queue_ commandBuffer];
+            if (prepared.wait_event)
+                [preprocess encodeWaitForEvent:prepared.wait_event
+                    value:request.wait_fence_value];
+            id<MTLComputeCommandEncoder> encoder =
+                [preprocess computeCommandEncoder];
+            struct PreprocessParameters { uint32_t width,height,size; } pp{
+                request.width,request.height,size};
+            [encoder setComputePipelineState:preprocess_pipeline_];
+            [encoder setTexture:prepared.input_texture atIndex:0];
+            [encoder setBuffer:input offset:0 atIndex:0];
+            [encoder setBytes:&pp length:sizeof(pp) atIndex:1];
+            dispatch(encoder,preprocess_pipeline_,size,size,1);
+            [encoder endEncoding]; [preprocess commit];
+
+            if (cache_.empty()) {
+                const Plan& seed_plan = get_plan(1,size,size,false);
+                auto seed = make_metal_entry(seed_plan);
+                id<MTLBuffer> seed_depth = [device_ newBufferWithLength:
+                    static_cast<NSUInteger>(size)*size*sizeof(float)
+                    options:MTLResourceStorageModePrivate];
+                run_external(seed_plan,input,nullptr,seed_depth,*seed);
+                cache_.assign(32,seed); stream_size_=size;
+            }
+            std::vector<std::shared_ptr<StreamEntry>> selected;
+            selected.reserve(31); selected.push_back(cache_[0]);
+            selected.push_back(cache_[1]);
+            const std::size_t tail=cache_.size()-29;
+            selected.insert(selected.end(),cache_.begin()+tail,cache_.end());
+            const Plan& plan=get_plan(1,size,size,true);
+            std::array<id<MTLBuffer>,8> histories{};
+            id<MTLCommandBuffer> packing=[queue_ commandBuffer];
+            encoder=[packing computeCommandEncoder];
+            for(std::size_t module=0;module<8;++module){
+                const CacheShape cs=plan.cache_shapes[module];
+                histories[module]=[device_ newBufferWithLength:
+                    static_cast<NSUInteger>(cs.spatial)*31*cs.channels*sizeof(float)
+                    options:MTLResourceStorageModePrivate];
+                if(!histories[module])throw std::bad_alloc();
+                for(uint32_t frame=0;frame<31;++frame){
+                    struct PackParameters{uint32_t spatial,channels,frame;} p{
+                        static_cast<uint32_t>(cs.spatial),
+                        static_cast<uint32_t>(cs.channels),frame};
+                    [encoder setComputePipelineState:pack_pipeline_];
+                    [encoder setBuffer:selected[frame]->metal_attention[module]
+                        offset:0 atIndex:0];
+                    [encoder setBuffer:histories[module] offset:0 atIndex:1];
+                    [encoder setBytes:&p length:sizeof(p) atIndex:2];
+                    dispatch(encoder,pack_pipeline_,cs.spatial,cs.channels,1);
+                }
+            }
+            [encoder endEncoding]; [packing commit];
+            auto current=make_metal_entry(plan);
+            id<MTLBuffer> network_depth=[device_ newBufferWithLength:
+                static_cast<NSUInteger>(size)*size*sizeof(float)
+                options:MTLResourceStorageModePrivate];
+            run_external(plan,input,&histories,network_depth,*current);
+            cache_.push_back(current); ++stream_id_;
+            if(stream_id_+32>42)cache_.erase(cache_.begin()+1);
+
+            id<MTLBuffer> resized=[device_ newBufferWithLength:
+                static_cast<NSUInteger>(request.width)*request.height*sizeof(float)
+                options:MTLResourceStorageModePrivate];
+            id<MTLBuffer> range=[device_ newBufferWithLength:2*sizeof(float)
+                options:MTLResourceStorageModePrivate];
+            if(!network_depth||!resized||!range)throw std::bad_alloc();
+            id<MTLCommandBuffer> completion=[queue_ commandBuffer];
+            encoder=[completion computeCommandEncoder];
+            struct ResizeParameters{uint32_t sw,sh,width,height;} rp{
+                size,size,request.width,request.height};
+            [encoder setComputePipelineState:resize_pipeline_];
+            [encoder setBuffer:network_depth offset:0 atIndex:0];
+            [encoder setBuffer:resized offset:0 atIndex:1];
+            [encoder setBytes:&rp length:sizeof(rp) atIndex:2];
+            dispatch(encoder,resize_pipeline_,request.width,request.height,1);
+            if(!config_.metric){
+                uint32_t count=request.width*request.height;
+                [encoder setComputePipelineState:reduce_pipeline_];
+                [encoder setBuffer:resized offset:0 atIndex:0];
+                [encoder setBuffer:range offset:0 atIndex:1];
+                [encoder setBytes:&count length:sizeof(count) atIndex:2];
+                dispatch(encoder,reduce_pipeline_,256,1,1);
+            }
+            struct OutputParameters{uint32_t width,height,normalize;} op{
+                request.width,request.height,config_.metric?0u:1u};
+            [encoder setComputePipelineState:output_pipeline_];
+            [encoder setBuffer:resized offset:0 atIndex:0];
+            [encoder setBuffer:range offset:0 atIndex:1];
+            [encoder setTexture:prepared.output_texture atIndex:0];
+            [encoder setBytes:&op length:sizeof(op) atIndex:2];
+            dispatch(encoder,output_pipeline_,request.width,request.height,1);
+            [encoder endEncoding];
+            [completion encodeSignalEvent:prepared.signal_event
+                value:prepared.signal_value];
+            [completion commit];
+            return std::make_shared<MetalExternalJob>(
+                std::make_shared<inferbridge::native_harness::metal::Submission>(
+                    prepared,completion));
+        }
+    }
+
 private:
+    static void dispatch(id<MTLComputeCommandEncoder> encoder,
+        id<MTLComputePipelineState> pipeline, NSUInteger width,
+        NSUInteger height, NSUInteger depth) {
+        const NSUInteger x=pipeline.threadExecutionWidth;
+        const NSUInteger y=std::max<NSUInteger>(1,
+            pipeline.maxTotalThreadsPerThreadgroup/x);
+        [encoder dispatchThreads:MTLSizeMake(width,height,depth)
+            threadsPerThreadgroup:MTLSizeMake(x,y,1)];
+    }
+
+    std::shared_ptr<StreamEntry> make_metal_entry(const Plan& plan) {
+        auto result=std::make_shared<StreamEntry>();
+        for(std::size_t index=0;index<8;++index){
+            const CacheShape cs=plan.cache_shapes[index];
+            result->metal_attention[index]=[device_ newBufferWithLength:
+                static_cast<NSUInteger>(cs.spatial)*cs.channels*sizeof(float)
+                options:MTLResourceStorageModePrivate];
+            if(!result->metal_attention[index])throw std::bad_alloc();
+        }
+        return result;
+    }
+
+    void run_external(const Plan& plan,id<MTLBuffer> input,
+        const std::array<id<MTLBuffer>,8>* histories,id<MTLBuffer> depth,
+        StreamEntry& current) {
+        NSMutableArray<MPSGraphTensorData*>* values=[NSMutableArray array];
+        [values addObject:[[MPSGraphTensorData alloc]initWithMTLBuffer:input
+            shape:shape({plan.frames,3,plan.height,plan.width})
+            dataType:MPSDataTypeFloat32]];
+        if(histories){
+            for(std::size_t index=0;index<8;++index){
+                const CacheShape cs=plan.cache_shapes[index];
+                [values addObject:[[MPSGraphTensorData alloc]
+                    initWithMTLBuffer:(*histories)[index]
+                    shape:shape({cs.spatial,31,cs.channels})
+                    dataType:MPSDataTypeFloat32]];
+            }
+        }
+        NSMutableArray<MPSGraphTensorData*>* outputs=[NSMutableArray array];
+        [outputs addObject:[[MPSGraphTensorData alloc]initWithMTLBuffer:depth
+            shape:shape({1,1,plan.height,plan.width})
+            dataType:MPSDataTypeFloat32]];
+        for(std::size_t index=0;index<8;++index){
+            const CacheShape cs=plan.cache_shapes[index];
+            [outputs addObject:[[MPSGraphTensorData alloc]
+                initWithMTLBuffer:current.metal_attention[index]
+                shape:shape({cs.spatial,1,cs.channels})
+                dataType:MPSDataTypeFloat32]];
+        }
+        MPSGraphExecutableExecutionDescriptor* execution=
+            [MPSGraphExecutableExecutionDescriptor new];
+        execution.waitUntilCompleted=NO;
+        NSArray* results=[plan.executable runAsyncWithMTLCommandQueue:queue_
+            inputsArray:values resultsArray:outputs executionDescriptor:execution];
+        if(results.count!=9)
+            throw std::runtime_error("VDA Metal output binding failed");
+    }
+
+    void create_texture_pipelines(){
+        static constexpr char source_text[]=R"METAL(
+#include <metal_stdlib>
+using namespace metal;
+struct PreprocessParameters{uint width,height,size;};
+kernel void preprocess(texture2d<float,access::read>src[[texture(0)]],
+ device float*dst[[buffer(0)]],constant PreprocessParameters&p[[buffer(1)]],
+ uint2 q[[thread_position_in_grid]]){
+ if(q.x>=p.size||q.y>=p.size)return;
+ uint sx=min(p.width-1,q.x*p.width/p.size),sy=min(p.height-1,q.y*p.height/p.size);
+ float4 pixel=src.read(uint2(sx,sy));uint i=q.y*p.size+q.x,plane=p.size*p.size;
+ dst[i]=(pixel.z-0.485f)/0.229f;dst[plane+i]=(pixel.y-0.456f)/0.224f;
+ dst[2*plane+i]=(pixel.x-0.406f)/0.225f;
+}
+struct PackParameters{uint spatial,channels,frame;};
+kernel void pack_history(device const float*src[[buffer(0)]],device float*dst[[buffer(1)]],
+ constant PackParameters&p[[buffer(2)]],uint2 q[[thread_position_in_grid]]){
+ if(q.x>=p.spatial||q.y>=p.channels)return;
+ dst[(q.x*31+p.frame)*p.channels+q.y]=src[q.x*p.channels+q.y];
+}
+struct ResizeParameters{uint sw,sh,width,height;};
+kernel void resize_depth(device const float*src[[buffer(0)]],device float*dst[[buffer(1)]],
+ constant ResizeParameters&p[[buffer(2)]],uint2 q[[thread_position_in_grid]]){
+ if(q.x>=p.width||q.y>=p.height)return;
+ float fx=p.width>1?float(q.x)*float(p.sw-1)/float(p.width-1):0.0f;
+ float fy=p.height>1?float(q.y)*float(p.sh-1)/float(p.height-1):0.0f;
+ uint x0=uint(floor(fx)),y0=uint(floor(fy)),x1=min(x0+1,p.sw-1),y1=min(y0+1,p.sh-1);
+ float top=mix(src[y0*p.sw+x0],src[y0*p.sw+x1],fx-float(x0));
+ float bottom=mix(src[y1*p.sw+x0],src[y1*p.sw+x1],fx-float(x0));
+ dst[q.y*p.width+q.x]=mix(top,bottom,fy-float(y0));
+}
+kernel void reduce_range(device const float*src[[buffer(0)]],device float*range[[buffer(1)]],
+ constant uint&count[[buffer(2)]],uint gid[[thread_position_in_grid]]){
+ if(gid)return;float lo=INFINITY,hi=-INFINITY;
+ for(uint i=0;i<count;++i){lo=min(lo,src[i]);hi=max(hi,src[i]);}
+ range[0]=lo;range[1]=hi;
+}
+struct OutputParameters{uint width,height,normalize;};
+kernel void write_output(device const float*src[[buffer(0)]],device const float*range[[buffer(1)]],
+ texture2d<float,access::write>out[[texture(0)]],constant OutputParameters&p[[buffer(2)]],
+ uint2 q[[thread_position_in_grid]]){
+ if(q.x>=p.width||q.y>=p.height)return;float v=src[q.y*p.width+q.x];
+ if(p.normalize){float r=range[1]-range[0];v=r>0?(v-range[0])/r:0.0f;}
+ out.write(float4(v),q);
+}
+)METAL";
+        NSError* error=nil;
+        id<MTLLibrary> library=[device_ newLibraryWithSource:
+            [NSString stringWithUTF8String:source_text] options:nil error:&error];
+        if(!library)throw std::runtime_error(error.localizedDescription.UTF8String?:
+            "could not compile VDA Metal texture kernels");
+        auto make=[&](NSString*name){
+            id<MTLComputePipelineState> result=[device_ newComputePipelineStateWithFunction:
+                [library newFunctionWithName:name] error:&error];
+            if(!result)throw std::runtime_error(error.localizedDescription.UTF8String?:
+                "could not create VDA Metal texture pipeline");return result;};
+        preprocess_pipeline_=make(@"preprocess");pack_pipeline_=make(@"pack_history");
+        resize_pipeline_=make(@"resize_depth");reduce_pipeline_=make(@"reduce_range");
+        output_pipeline_=make(@"write_output");
+    }
+
     const Plan& get_plan(
         int frames, int width, int height, bool cached) {
         const PlanKey key{frames, width, height, cached};
@@ -731,6 +1013,11 @@ private:
     std::int64_t stream_id_ = -1;
     std::uint32_t stream_size_ = 0;
     std::mutex mutex_;
+    id<MTLComputePipelineState> preprocess_pipeline_=nil;
+    id<MTLComputePipelineState> pack_pipeline_=nil;
+    id<MTLComputePipelineState> resize_pipeline_=nil;
+    id<MTLComputePipelineState> reduce_pipeline_=nil;
+    id<MTLComputePipelineState> output_pipeline_=nil;
 };
 
 MetalExecutor::MetalExecutor(
@@ -746,6 +1033,10 @@ void MetalExecutor::infer_tensor(
 void MetalExecutor::infer_stream(
     const float* input, std::uint32_t size, float* depth) {
     impl_->infer_stream(input, size, depth);
+}
+std::shared_ptr<ExternalJob> MetalExecutor::submit_texture(
+    const ExternalTextureRequest& request) {
+    return impl_->submit_texture(request);
 }
 
 }  // namespace vda_native

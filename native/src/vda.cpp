@@ -6,6 +6,7 @@
 #include "model_config.h"
 #if defined(VDA_WITH_METAL)
 #include "metal_executor.h"
+#include "vda_internal.h"
 #endif
 #if defined(VDA_WITH_VULKAN)
 #include "dpt_gpu.h"
@@ -172,6 +173,35 @@ void resize_stream_depth(
     }
 }
 }
+
+#if defined(VDA_WITH_METAL)
+namespace vda_native {
+
+class ContextMetalExternalGpu final : public ExternalGpu {
+public:
+    explicit ContextMetalExternalGpu(vda_context* context) : context_(context) {
+        if (!context_ || !context_->metal)
+            throw std::invalid_argument("VDA Metal context is unavailable");
+    }
+    ExternalGpuCapabilities capabilities() const override {
+        return {true, 0u, 3u};
+    }
+    std::shared_ptr<ExternalJob> submit_texture(
+        const ExternalTextureRequest& request) override {
+        return context_->metal->submit_texture(request);
+    }
+    void transfer_counters(std::uint64_t& up,
+        std::uint64_t& down) const override { up=0u; down=0u; }
+private:
+    vda_context* context_;
+};
+
+std::shared_ptr<ExternalGpu> create_metal_external_gpu(vda_context* context) {
+    return std::make_shared<ContextMetalExternalGpu>(context);
+}
+
+}  // namespace vda_native
+#endif
 
 extern "C" {
 
