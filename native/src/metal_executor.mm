@@ -536,6 +536,10 @@ struct Plan {
 struct StreamEntry {
     std::array<std::vector<float>, 8> attention;
     std::array<id<MTLBuffer>, 8> metal_attention{};
+    std::array<MPSGraphTensorData*, 8> metal_data{};
+    std::shared_ptr<
+        inferbridge::native_harness::metal::AuxiliaryTensorPool::Lease>
+        metal_lease;
 };
 
 class MetalExternalJob final : public ExternalJob {
@@ -571,6 +575,11 @@ public:
         graph_device_ = [MPSGraphDevice deviceWithMTLDevice:device_];
         if (queue_ == nil || graph_device_ == nil)
             throw std::runtime_error("could not initialize VDA Metal");
+        inferbridge::native_harness::metal::label_queue(
+            queue_, "Video Depth Anything");
+        tensor_pool_ = std::make_shared<
+            inferbridge::native_harness::metal::AuxiliaryTensorPool>(
+                device_, "Video Depth Anything");
         create_texture_pipelines();
     }
 
@@ -682,16 +691,42 @@ public:
             if (!cache_.empty() && stream_size_ != size)
                 throw std::invalid_argument(
                     "VDA Metal stream size changed without reset");
-            id<MTLBuffer> input = [device_ newBufferWithLength:
-                static_cast<NSUInteger>(3ull * size * size * sizeof(float))
-                options:MTLResourceStorageModePrivate];
-            if (!input) throw std::bad_alloc();
+            const Plan& plan=get_plan(1,size,size,true);
+            std::vector<inferbridge::native_harness::metal::TensorSpec> specs;
+            specs.push_back({{1,3,(NSInteger)size,(NSInteger)size},
+                MPSDataTypeFloat32,sizeof(float),
+                MTLResourceStorageModePrivate,"Network Input"});
+            for(std::size_t module=0;module<8;++module){
+                const CacheShape cs=plan.cache_shapes[module];
+                specs.push_back({{cs.spatial,31,cs.channels},
+                    MPSDataTypeFloat32,sizeof(float),
+                    MTLResourceStorageModePrivate,
+                    "Attention History " + std::to_string(module)});
+            }
+            specs.push_back({{1,1,(NSInteger)size,(NSInteger)size},
+                MPSDataTypeFloat32,sizeof(float),
+                MTLResourceStorageModePrivate,"Network Depth"});
+            specs.push_back({{1,1,(NSInteger)size,(NSInteger)size},
+                MPSDataTypeFloat32,sizeof(float),
+                MTLResourceStorageModePrivate,"Seed Depth"});
+            specs.push_back({{1,1,(NSInteger)request.height,
+                (NSInteger)request.width},MPSDataTypeFloat32,sizeof(float),
+                MTLResourceStorageModePrivate,"Resized Depth"});
+            specs.push_back({{2},MPSDataTypeFloat32,sizeof(float),
+                MTLResourceStorageModePrivate,"Depth Range"});
+            auto tensors=tensor_pool_->acquire(specs);
+            prepared.retained_resources.push_back(tensors);
+            id<MTLBuffer> input=tensors->buffer(0);
             id<MTLCommandBuffer> preprocess = [queue_ commandBuffer];
+            inferbridge::native_harness::metal::label_command(
+                preprocess,"Video Depth Anything","Preprocess");
             if (prepared.wait_event)
                 [preprocess encodeWaitForEvent:prepared.wait_event
                     value:request.wait_fence_value];
             id<MTLComputeCommandEncoder> encoder =
                 [preprocess computeCommandEncoder];
+            inferbridge::native_harness::metal::label_encoder(
+                encoder,"Video Depth Anything","Preprocess");
             struct PreprocessParameters { uint32_t width,height,size; } pp{
                 request.width,request.height,size};
             [encoder setComputePipelineState:preprocess_pipeline_];
@@ -704,10 +739,8 @@ public:
             if (cache_.empty()) {
                 const Plan& seed_plan = get_plan(1,size,size,false);
                 auto seed = make_metal_entry(seed_plan);
-                id<MTLBuffer> seed_depth = [device_ newBufferWithLength:
-                    static_cast<NSUInteger>(size)*size*sizeof(float)
-                    options:MTLResourceStorageModePrivate];
-                run_external(seed_plan,input,nullptr,seed_depth,*seed);
+                run_external(seed_plan,tensors->data(0),nullptr,
+                    tensors->data(10),*seed);
                 cache_.assign(32,seed); stream_size_=size;
             }
             std::vector<std::shared_ptr<StreamEntry>> selected;
@@ -715,16 +748,18 @@ public:
             selected.push_back(cache_[1]);
             const std::size_t tail=cache_.size()-29;
             selected.insert(selected.end(),cache_.begin()+tail,cache_.end());
-            const Plan& plan=get_plan(1,size,size,true);
             std::array<id<MTLBuffer>,8> histories{};
+            std::array<MPSGraphTensorData*,8> history_data{};
             id<MTLCommandBuffer> packing=[queue_ commandBuffer];
+            inferbridge::native_harness::metal::label_command(
+                packing,"Video Depth Anything","Pack Attention History");
             encoder=[packing computeCommandEncoder];
+            inferbridge::native_harness::metal::label_encoder(
+                encoder,"Video Depth Anything","Pack Attention History");
             for(std::size_t module=0;module<8;++module){
                 const CacheShape cs=plan.cache_shapes[module];
-                histories[module]=[device_ newBufferWithLength:
-                    static_cast<NSUInteger>(cs.spatial)*31*cs.channels*sizeof(float)
-                    options:MTLResourceStorageModePrivate];
-                if(!histories[module])throw std::bad_alloc();
+                histories[module]=tensors->buffer(1+module);
+                history_data[module]=tensors->data(1+module);
                 for(uint32_t frame=0;frame<31;++frame){
                     struct PackParameters{uint32_t spatial,channels,frame;} p{
                         static_cast<uint32_t>(cs.spatial),
@@ -739,21 +774,23 @@ public:
             }
             [encoder endEncoding]; [packing commit];
             auto current=make_metal_entry(plan);
-            id<MTLBuffer> network_depth=[device_ newBufferWithLength:
-                static_cast<NSUInteger>(size)*size*sizeof(float)
-                options:MTLResourceStorageModePrivate];
-            run_external(plan,input,&histories,network_depth,*current);
+            id<MTLBuffer> network_depth=tensors->buffer(9);
+            run_external(plan,tensors->data(0),&history_data,
+                tensors->data(9),*current);
+            for(const auto& entry:selected)
+                prepared.retained_resources.push_back(entry);
+            prepared.retained_resources.push_back(current);
             cache_.push_back(current); ++stream_id_;
             if(stream_id_+32>42)cache_.erase(cache_.begin()+1);
 
-            id<MTLBuffer> resized=[device_ newBufferWithLength:
-                static_cast<NSUInteger>(request.width)*request.height*sizeof(float)
-                options:MTLResourceStorageModePrivate];
-            id<MTLBuffer> range=[device_ newBufferWithLength:2*sizeof(float)
-                options:MTLResourceStorageModePrivate];
-            if(!network_depth||!resized||!range)throw std::bad_alloc();
+            id<MTLBuffer> resized=tensors->buffer(11);
+            id<MTLBuffer> range=tensors->buffer(12);
             id<MTLCommandBuffer> completion=[queue_ commandBuffer];
+            inferbridge::native_harness::metal::label_command(
+                completion,"Video Depth Anything","Resize and Present Depth");
             encoder=[completion computeCommandEncoder];
+            inferbridge::native_harness::metal::label_encoder(
+                encoder,"Video Depth Anything","Resize and Present Depth");
             struct ResizeParameters{uint32_t sw,sh,width,height;} rp{
                 size,size,request.width,request.height};
             [encoder setComputePipelineState:resize_pipeline_];
@@ -800,42 +837,37 @@ private:
 
     std::shared_ptr<StreamEntry> make_metal_entry(const Plan& plan) {
         auto result=std::make_shared<StreamEntry>();
+        std::vector<inferbridge::native_harness::metal::TensorSpec> specs;
         for(std::size_t index=0;index<8;++index){
             const CacheShape cs=plan.cache_shapes[index];
-            result->metal_attention[index]=[device_ newBufferWithLength:
-                static_cast<NSUInteger>(cs.spatial)*cs.channels*sizeof(float)
-                options:MTLResourceStorageModePrivate];
-            if(!result->metal_attention[index])throw std::bad_alloc();
+            specs.push_back({{cs.spatial,1,cs.channels},
+                MPSDataTypeFloat32,sizeof(float),
+                MTLResourceStorageModePrivate,
+                "Current Attention " + std::to_string(index)});
+        }
+        result->metal_lease=tensor_pool_->acquire(specs);
+        for(std::size_t index=0;index<8;++index){
+            result->metal_attention[index]=result->metal_lease->buffer(index);
+            result->metal_data[index]=result->metal_lease->data(index);
         }
         return result;
     }
 
-    void run_external(const Plan& plan,id<MTLBuffer> input,
-        const std::array<id<MTLBuffer>,8>* histories,id<MTLBuffer> depth,
+    void run_external(const Plan& plan,MPSGraphTensorData* input,
+        const std::array<MPSGraphTensorData*,8>* histories,
+        MPSGraphTensorData* depth,
         StreamEntry& current) {
         NSMutableArray<MPSGraphTensorData*>* values=[NSMutableArray array];
-        [values addObject:[[MPSGraphTensorData alloc]initWithMTLBuffer:input
-            shape:shape({plan.frames,3,plan.height,plan.width})
-            dataType:MPSDataTypeFloat32]];
+        [values addObject:input];
         if(histories){
             for(std::size_t index=0;index<8;++index){
-                const CacheShape cs=plan.cache_shapes[index];
-                [values addObject:[[MPSGraphTensorData alloc]
-                    initWithMTLBuffer:(*histories)[index]
-                    shape:shape({cs.spatial,31,cs.channels})
-                    dataType:MPSDataTypeFloat32]];
+                [values addObject:(*histories)[index]];
             }
         }
         NSMutableArray<MPSGraphTensorData*>* outputs=[NSMutableArray array];
-        [outputs addObject:[[MPSGraphTensorData alloc]initWithMTLBuffer:depth
-            shape:shape({1,1,plan.height,plan.width})
-            dataType:MPSDataTypeFloat32]];
+        [outputs addObject:depth];
         for(std::size_t index=0;index<8;++index){
-            const CacheShape cs=plan.cache_shapes[index];
-            [outputs addObject:[[MPSGraphTensorData alloc]
-                initWithMTLBuffer:current.metal_attention[index]
-                shape:shape({cs.spatial,1,cs.channels})
-                dataType:MPSDataTypeFloat32]];
+            [outputs addObject:current.metal_data[index]];
         }
         MPSGraphExecutableExecutionDescriptor* execution=
             [MPSGraphExecutableExecutionDescriptor new];
@@ -1011,6 +1043,8 @@ kernel void write_output(device const float*src[[buffer(0)]],device const float*
     id<MTLDevice> device_ = nil;
     id<MTLCommandQueue> queue_ = nil;
     MPSGraphDevice* graph_device_ = nil;
+    std::shared_ptr<inferbridge::native_harness::metal::AuxiliaryTensorPool>
+        tensor_pool_;
     std::unordered_map<PlanKey, Plan, PlanKeyHash> plans_;
     std::vector<std::shared_ptr<StreamEntry>> cache_;
     std::int64_t stream_id_ = -1;
