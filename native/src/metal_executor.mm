@@ -928,7 +928,10 @@ kernel void write_output(device const float*src[[buffer(0)]],device const float*
                     cache_shapes[index].channels}) dataType:MPSDataTypeFloat32];
         MPSGraphCompilationDescriptor* descriptor =
             [MPSGraphCompilationDescriptor new];
-        descriptor.optimizationLevel = MPSGraphOptimizationLevel1;
+        // Keep the temporal graph on Metal. Level 1 attempts an ANE partition
+        // which the Apple compiler rejects after several seconds before
+        // falling back to the same Metal execution path.
+        descriptor.optimizationLevel = MPSGraphOptimizationLevel0;
         descriptor.waitForCompilationCompletion = YES;
         NSMutableArray<MPSGraphTensor*>* targets = [NSMutableArray array];
         for (MPSGraphTensor* target : builder.targets())
