@@ -33,9 +33,7 @@ void main() {
     const uint head_channels = parameters.channels / parameters.heads;
     const uint head = channel / head_channels;
     const uint head_base = head * head_channels;
-    const uint query_row =
-        (sequence * parameters.frames + parameters.query_frame) *
-        parameters.channels;
+    const uint query_row = sequence * parameters.channels;
     float maximum = -3.402823466e+38;
     float scores[32];
     const float scale = inversesqrt(float(head_channels));
@@ -71,6 +69,5 @@ void main() {
         result += scores[key_frame] / denominator *
             value_buffer.data[key_row + channel];
     }
-    output_buffer.data[
-        sequence * parameters.channels + channel] = result;
+    output_buffer.data[query_row + channel] = result;
 }

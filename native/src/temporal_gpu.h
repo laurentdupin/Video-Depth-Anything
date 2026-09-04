@@ -52,6 +52,7 @@ private:
     VulkanPipeline group_norm_;
     VulkanPipeline transpose_;
     VulkanPipeline position_;
+    VulkanPipeline extract_frame_;
     VulkanPipeline attention_;
     VulkanPipeline attention_stream_;
     VulkanPipeline geglu_;
