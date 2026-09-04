@@ -13,7 +13,7 @@
 namespace vda_native {
 
 struct TemporalFrameCache {
-    std::array<VulkanBuffer, 2> attention;
+    std::array<VulkanBuffer, 2> key_value;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint32_t channels = 0;
@@ -52,11 +52,15 @@ private:
     VulkanPipeline group_norm_;
     VulkanPipeline transpose_;
     VulkanPipeline position_;
-    VulkanPipeline extract_frame_;
+    VulkanPipeline position_offset_;
+    VulkanPipeline split_position_;
     VulkanPipeline attention_;
     VulkanPipeline attention_stream_;
     VulkanPipeline geglu_;
     VulkanPipeline output_;
+    std::array<std::array<VulkanBuffer, 2>, 4> query_position_;
+    std::array<std::array<VulkanBuffer, 2>, 4> key_value_position_;
+    std::array<std::array<VulkanBuffer, 2>, 4> key_value_weight_;
 };
 
 }  // namespace vda_native

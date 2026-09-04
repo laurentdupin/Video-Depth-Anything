@@ -8,21 +8,28 @@ layout(set = 0, binding = 0, std430) writeonly buffer Output {
 layout(set = 0, binding = 1, std430) readonly buffer Input {
     float data[];
 } input_buffer;
+layout(set = 0, binding = 2, std430) readonly buffer Position {
+    float data[];
+} position_buffer;
 
 layout(push_constant) uniform Parameters {
     uint sequences;
     uint frames;
     uint channels;
-    uint frame;
+    uint position_offset;
 } parameters;
 
 void main() {
     const uint index = gl_GlobalInvocationID.x;
-    const uint count = parameters.sequences * parameters.channels;
+    const uint count =
+        parameters.sequences * parameters.frames * parameters.channels;
     if (index >= count) return;
-    const uint sequence = index / parameters.channels;
     const uint channel = index % parameters.channels;
-    output_buffer.data[index] = input_buffer.data[
-        (sequence * parameters.frames + parameters.frame) *
-        parameters.channels + channel];
+    const uint frame =
+        (index / parameters.channels) % parameters.frames;
+    output_buffer.data[index] =
+        input_buffer.data[index] +
+        position_buffer.data[
+            (parameters.position_offset + frame) *
+                parameters.channels + channel];
 }

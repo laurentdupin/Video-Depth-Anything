@@ -87,7 +87,8 @@ if(VDA_WITH_VULKAN)
             softmax_lastdim_half temporal_attention
             temporal_attention_stream temporal_geglu
             temporal_group_norm temporal_output temporal_position
-            temporal_extract_frame
+            temporal_position_offset
+            temporal_split_position
             temporal_transpose preprocess_texture resize_depth
             reduce_minmax normalize_depth_image copy_depth_image)
         vda_compile_shader(${SHADER})
