@@ -1,3 +1,7 @@
+#if defined(__linux__) && !defined(__ANDROID__)
+#include "linux_capture.h"
+#include <inferbridge/linux_capture_preprocess.h>
+#endif
 #include "video_depth_anything_native.h"
 
 #include "dpt_cpu.h"
@@ -446,7 +450,11 @@ vda_status VDA_CALL vda_get_transfer_counters(
     return VDA_STATUS_OK;
 }
 
+#if defined(__linux__) && !defined(__ANDROID__)
+static vda_status vda_infer_stream_bgra8_f32_linux_impl(
+#else
 vda_status VDA_CALL vda_infer_stream_bgra8_f32(
+#endif
     vda_context* context,
     const uint8_t* bgra,
     uint64_t bgra_stride_bytes,
@@ -454,8 +462,16 @@ vda_status VDA_CALL vda_infer_stream_bgra8_f32(
     int32_t height,
     int32_t input_size,
     float* depth,
-    uint64_t depth_elements) {
-    if (!context || !context->model || !bgra || !depth ||
+    uint64_t depth_elements
+#if defined(__linux__) && !defined(__ANDROID__)
+    , const inferbridge::linux_capture::LinuxDmaBufImage* capture
+#endif
+    ) {
+    if (!context || !context->model || (!bgra
+#if defined(__linux__) && !defined(__ANDROID__)
+        && !capture
+#endif
+        ) || !depth ||
         width <= 0 || height <= 0 || input_size <= 0 ||
         input_size % 14 != 0 ||
         bgra_stride_bytes <
@@ -510,17 +526,25 @@ vda_status VDA_CALL vda_infer_stream_bgra8_f32(
     return protect([&] {
         const std::uint32_t network_size =
             static_cast<std::uint32_t>(input_size);
+        vda_native::VulkanBuffer image;
+#if defined(__linux__) && !defined(__ANDROID__)
+        if(capture) image=inferbridge::linux_capture::capture_tensor(*context->vulkan,*capture,network_size,network_size,
+            {3,true,{.485f,.456f,.406f,0},{.229f,.224f,.225f,1}});
+        else
+#endif
+        {
         std::vector<float> prepared = preprocess_stream_bgra(
             bgra, bgra_stride_bytes,
             static_cast<std::uint32_t>(width),
             static_cast<std::uint32_t>(height),
             network_size);
-        vda_native::VulkanBuffer image =
+        image =
             context->vulkan->create_device_buffer(
                 prepared.size() * sizeof(float));
         context->vulkan->upload(
             image, prepared.data(),
             prepared.size() * sizeof(float));
+        }
 
         const auto run = [&](
             const std::vector<std::shared_ptr<vda_stream_entry>>& selected,
@@ -592,3 +616,5 @@ vda_status VDA_CALL vda_infer_stream_bgra8_f32(
 }
 
 }
+
+#include "linux_capture.inl"
