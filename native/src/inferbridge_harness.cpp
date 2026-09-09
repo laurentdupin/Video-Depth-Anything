@@ -30,6 +30,18 @@
 #include <thread>
 #include <vector>
 
+struct ibrh_job;
+struct GpuQueue {
+    std::mutex queue_mutex;
+    std::condition_variable queue_condition;
+    std::deque<ibrh_job*> queue;
+    bool stopping = false;
+    bool exited = false;
+#if defined(VDA_WITH_EXTERNAL_GPU)
+    std::deque<std::shared_ptr<vda_native::ExternalJob>> retired;
+#endif
+};
+
 struct ibrh_runtime {
     std::string error;
     int32_t vulkan_device_index = 0;
@@ -51,10 +63,7 @@ struct ibrh_model {
     std::mutex submit_mutex;
     std::shared_ptr<std::atomic<uint32_t>> occupied_slots =
         std::make_shared<std::atomic<uint32_t>>(0u);
-    std::mutex queue_mutex;
-    std::condition_variable queue_condition;
-    std::deque<ibrh_job*> queue;
-    bool stopping = false;
+    std::shared_ptr<GpuQueue> gpu_queue = std::make_shared<GpuQueue>();
     std::thread worker;
 };
 
@@ -65,6 +74,7 @@ struct ibrh_job {
     std::shared_ptr<std::atomic<uint32_t>> occupied_slots;
 #if defined(VDA_WITH_EXTERNAL_GPU)
     std::shared_ptr<vda_native::ExternalJob> gpu_job;
+    std::shared_ptr<GpuQueue> gpu_queue;
     vda_native::ExternalTextureRequest request{};
     std::mutex gpu_mutex;
 #endif
@@ -205,6 +215,16 @@ void retain_job(ibrh_job* job) {
 
 void release_job(ibrh_job* job) {
     if (job != nullptr && job->references.fetch_sub(1u) == 1u) {
+#if defined(VDA_WITH_EXTERNAL_GPU)
+        if (job->gpu_job && job->gpu_queue) {
+            auto queue = job->gpu_queue;
+            {
+                std::lock_guard<std::mutex> lock(queue->queue_mutex);
+                if (!queue->exited) queue->retired.push_back(std::move(job->gpu_job));
+            }
+            queue->queue_condition.notify_one();
+        }
+#endif
         if (job->occupied_slots) job->occupied_slots->fetch_sub(1u);
         delete job;
     }
@@ -214,15 +234,23 @@ void release_job(ibrh_job* job) {
 void worker_loop(ibrh_model* model) {
     for (;;) {
         ibrh_job* job = nullptr;
+        std::deque<std::shared_ptr<vda_native::ExternalJob>> retired;
         {
-            std::unique_lock<std::mutex> lock(model->queue_mutex);
-            model->queue_condition.wait(lock, [&] {
-                return model->stopping || !model->queue.empty();
+            std::unique_lock<std::mutex> lock(model->gpu_queue->queue_mutex);
+            model->gpu_queue->queue_condition.wait(lock, [&] {
+                return model->gpu_queue->stopping || !model->gpu_queue->queue.empty() || !model->gpu_queue->retired.empty();
             });
-            if (model->stopping && model->queue.empty()) return;
-            job = model->queue.front();
-            model->queue.pop_front();
+            if (model->gpu_queue->stopping && model->gpu_queue->queue.empty() && model->gpu_queue->retired.empty()) {
+                model->gpu_queue->exited = true;
+                return;
+            }
+            retired.swap(model->gpu_queue->retired);
+            if (!model->gpu_queue->queue.empty()) {
+                job = model->gpu_queue->queue.front(); model->gpu_queue->queue.pop_front();
+            }
         }
+        retired.clear();
+        if (!job) continue;
         if (job->cancel_requested.load()) {
             job->state.store(IBRH_JOB_CANCELLED);
             release_job(job);
@@ -454,16 +482,16 @@ void IBRH_CALL model_unload(ibrh_model* model) {
     if (model == nullptr) return;
 #if defined(VDA_WITH_EXTERNAL_GPU)
     {
-        std::lock_guard<std::mutex> lock(model->queue_mutex);
-        model->stopping = true;
-        for (ibrh_job* job : model->queue) {
+        std::lock_guard<std::mutex> lock(model->gpu_queue->queue_mutex);
+        model->gpu_queue->stopping = true;
+        for (ibrh_job* job : model->gpu_queue->queue) {
             job->cancel_requested.store(true);
             job->state.store(IBRH_JOB_CANCELLED);
             release_job(job);
         }
-        model->queue.clear();
+        model->gpu_queue->queue.clear();
     }
-    model->queue_condition.notify_all();
+    model->gpu_queue->queue_condition.notify_all();
     if (model->worker.joinable()) model->worker.join();
     model->external_gpu.reset();
 #endif
@@ -489,14 +517,14 @@ ibrh_result IBRH_CALL submit(ibrh_model* model,size_t n,const ibrh_submit_reques
  while(occupied<3u&&!model->occupied_slots->compare_exchange_weak(occupied,occupied+1u)){}
  if(occupied>=3u)return IBRH_ERROR_INVALID_STATE;
  auto*j=new(std::nothrow)ibrh_job();if(!j){model->occupied_slots->fetch_sub(1u);return IBRH_ERROR_INTERNAL;}
- j->occupied_slots=model->occupied_slots;j->source_frame_id=r->source_frame_id;j->timestamp_ns=r->timestamp_ns;j->width=i.width;j->height=i.height;
+ j->occupied_slots=model->occupied_slots;j->gpu_queue=model->gpu_queue;j->source_frame_id=r->source_frame_id;j->timestamp_ns=r->timestamp_ns;j->width=i.width;j->height=i.height;
  j->request={static_cast<uintptr_t>(i.native_handle),i.auxiliary_handle,i.width,i.height,size,static_cast<uintptr_t>(s.synchronization.native_handle),s.synchronization.value,static_cast<uintptr_t>(o.native_handle),o.auxiliary_handle,o.width,o.height,static_cast<uintptr_t>(t.synchronization.native_handle),t.synchronization.value,r->source_frame_id,r->timestamp_ns,reset_stream};
- {std::lock_guard<std::mutex>l(model->queue_mutex);if(model->stopping){release_job(j);return IBRH_ERROR_INVALID_STATE;}retain_job(j);model->queue.push_back(j);}
- model->queue_condition.notify_one();*out=j;return IBRH_OK;}
+ {std::lock_guard<std::mutex>l(model->gpu_queue->queue_mutex);if(model->gpu_queue->stopping){release_job(j);return IBRH_ERROR_INVALID_STATE;}retain_job(j);model->gpu_queue->queue.push_back(j);}
+ model->gpu_queue->queue_condition.notify_one();*out=j;return IBRH_OK;}
 #endif
 #if defined(VDA_WITH_METAL) && defined(__APPLE__)
  if(i.domain==IBRH_RESOURCE_DOMAIN_METAL){const auto&wait=s.synchronization;const auto&signal=t.synchronization;const bool no_wait=wait.kind==IBRH_SYNC_NONE;const bool event_wait=wait.kind==IBRH_SYNC_METAL_SHARED_EVENT&&wait.operation==IBRH_SYNC_WAIT&&wait.native_handle_type==IBRH_NATIVE_HANDLE_METAL_SHARED_EVENT&&wait.native_handle!=0u;if(!model->external_gpu||o.domain!=IBRH_RESOURCE_DOMAIN_METAL||i.pixel_format!=IBRH_PIXEL_BGRA8||i.native_handle_type!=IBRH_NATIVE_HANDLE_METAL_TEXTURE||!i.native_handle||o.native_handle_type!=IBRH_NATIVE_HANDLE_METAL_TEXTURE||!o.native_handle||(!no_wait&&!event_wait)||signal.kind!=IBRH_SYNC_METAL_SHARED_EVENT||signal.operation!=IBRH_SYNC_SIGNAL||signal.native_handle_type!=IBRH_NATIVE_HANDLE_METAL_SHARED_EVENT||!signal.native_handle||!signal.value)return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
- uint32_t occupied=model->occupied_slots->load();while(occupied<3u&&!model->occupied_slots->compare_exchange_weak(occupied,occupied+1u)){}if(occupied>=3u)return IBRH_ERROR_INVALID_STATE;auto*j=new(std::nothrow)ibrh_job();if(!j){model->occupied_slots->fetch_sub(1u);return IBRH_ERROR_INTERNAL;}j->occupied_slots=model->occupied_slots;j->source_frame_id=r->source_frame_id;j->timestamp_ns=r->timestamp_ns;j->width=i.width;j->height=i.height;j->request={static_cast<uintptr_t>(i.native_handle),i.auxiliary_handle,i.width,i.height,size,event_wait?static_cast<uintptr_t>(wait.native_handle):0u,event_wait?wait.value:0u,static_cast<uintptr_t>(o.native_handle),o.auxiliary_handle,o.width,o.height,static_cast<uintptr_t>(signal.native_handle),signal.value,r->source_frame_id,r->timestamp_ns,reset_stream};{std::lock_guard<std::mutex>l(model->queue_mutex);if(model->stopping){release_job(j);return IBRH_ERROR_INVALID_STATE;}retain_job(j);model->queue.push_back(j);}model->queue_condition.notify_one();*out=j;return IBRH_OK;}
+ uint32_t occupied=model->occupied_slots->load();while(occupied<3u&&!model->occupied_slots->compare_exchange_weak(occupied,occupied+1u)){}if(occupied>=3u)return IBRH_ERROR_INVALID_STATE;auto*j=new(std::nothrow)ibrh_job();if(!j){model->occupied_slots->fetch_sub(1u);return IBRH_ERROR_INTERNAL;}j->occupied_slots=model->occupied_slots;j->gpu_queue=model->gpu_queue;j->source_frame_id=r->source_frame_id;j->timestamp_ns=r->timestamp_ns;j->width=i.width;j->height=i.height;j->request={static_cast<uintptr_t>(i.native_handle),i.auxiliary_handle,i.width,i.height,size,event_wait?static_cast<uintptr_t>(wait.native_handle):0u,event_wait?wait.value:0u,static_cast<uintptr_t>(o.native_handle),o.auxiliary_handle,o.width,o.height,static_cast<uintptr_t>(signal.native_handle),signal.value,r->source_frame_id,r->timestamp_ns,reset_stream};{std::lock_guard<std::mutex>l(model->gpu_queue->queue_mutex);if(model->gpu_queue->stopping){release_job(j);return IBRH_ERROR_INVALID_STATE;}retain_job(j);model->gpu_queue->queue.push_back(j);}model->gpu_queue->queue_condition.notify_one();*out=j;return IBRH_OK;}
 #endif
  if(i.domain!=IBRH_RESOURCE_DOMAIN_HOST||o.domain!=IBRH_RESOURCE_DOMAIN_HOST||i.native_handle_type!=IBRH_NATIVE_HANDLE_HOST_POINTER||o.native_handle_type!=IBRH_NATIVE_HANDLE_HOST_POINTER||i.pixel_format!=IBRH_PIXEL_BGRA8||s.synchronization.kind!=IBRH_SYNC_NONE||t.synchronization.kind!=IBRH_SYNC_NONE)return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
  const auto*bgra=reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(i.native_handle))+i.byte_offset;auto*depth=reinterpret_cast<float*>(static_cast<uintptr_t>(o.native_handle)+o.byte_offset);
