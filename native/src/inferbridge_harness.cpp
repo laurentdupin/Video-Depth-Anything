@@ -1,3 +1,4 @@
+#include <inferbridge/native_harness_json.h>
 
 #include "inferbridge_harness.h"
 
@@ -110,17 +111,7 @@ bool valid_string(ibrh_string_view value) {
 
 bool json_string(
     const std::string& json, const std::string& key, std::string& value) {
-    const std::string marker = "\"" + key + "\"";
-    size_t position = json.find(marker);
-    if (position == std::string::npos) return false;
-    position = json.find(':', position + marker.size());
-    if (position == std::string::npos) return false;
-    position = json.find_first_not_of(" \t\r\n", position + 1u);
-    if (position == std::string::npos || json[position] != '"') return false;
-    const size_t end = json.find('"', position + 1u);
-    if (end == std::string::npos) return false;
-    value = json.substr(position + 1u, end - position - 1u);
-    return true;
+    return inferbridge::harness_json::string_member(json, key, value);
 }
 
 bool json_uint(
@@ -501,7 +492,7 @@ void IBRH_CALL model_unload(ibrh_model* model) {
 
 ibrh_result IBRH_CALL model_describe_io(const ibrh_model* m,size_t n,ibrh_model_io_descriptor* o){if(!m||!o)return IBRH_ERROR_INVALID_ARGUMENT;if(n<sizeof(*o))return IBRH_ERROR_STRUCT_TOO_SMALL;*o={};o->struct_size=sizeof(*o);o->api_version=IBRH_CURRENT_API_VERSION;o->input_count=o->output_count=1;return IBRH_OK;}
 ibrh_result IBRH_CALL model_get_port(const ibrh_model* m,uint32_t d,uint32_t i,size_t n,ibrh_port_descriptor* o){if(!m||!o)return IBRH_ERROR_INVALID_ARGUMENT;if(n<sizeof(*o))return IBRH_ERROR_STRUCT_TOO_SMALL;if(i||(d!=IBRH_PORT_INPUT&&d!=IBRH_PORT_OUTPUT))return IBRH_ERROR_NOT_FOUND;*o={};o->struct_size=sizeof(*o);o->api_version=IBRH_CURRENT_API_VERSION;o->direction=d;o->semantic=d==IBRH_PORT_INPUT?IBRH_SEMANTIC_IMAGE:IBRH_SEMANTIC_DEPTH;o->payload_type=d==IBRH_PORT_INPUT?IBRH_PIXEL_BGRA8:(m->metric?IBRH_PIXEL_DEPTH_METRIC_FLOAT32:IBRH_PIXEL_DEPTH_FLOAT32);o->pixel_format=o->payload_type;o->accepted_pixel_format_mask=1ull<<o->pixel_format;o->resource_kind=IBRH_RESOURCE_KIND_IMAGE_2D;o->depth=1;o->flags=IBRH_DESCRIPTOR_DYNAMIC_WIDTH|IBRH_DESCRIPTOR_DYNAMIC_HEIGHT;return IBRH_OK;}
-ibrh_result IBRH_CALL model_plan_outputs(const ibrh_model* m,size_t n,const ibrh_output_plan_request* r,uint32_t c,ibrh_port_descriptor* o){if(!m||!r||!o)return IBRH_ERROR_INVALID_ARGUMENT;if(n<sizeof(*r)||r->struct_size<sizeof(*r)||c<1)return IBRH_ERROR_STRUCT_TOO_SMALL;if(r->input_count!=1||!r->inputs)return IBRH_ERROR_INVALID_ARGUMENT;auto x=model_get_port(m,IBRH_PORT_OUTPUT,0,sizeof(o[0]),&o[0]);if(x!=IBRH_OK)return x;o[0].width=r->inputs[0].width;o[0].height=r->inputs[0].height;o[0].flags=0;return IBRH_OK;}
+ibrh_result IBRH_CALL model_plan_outputs(const ibrh_model* m,size_t n,const ibrh_output_plan_request* r,uint32_t c,ibrh_port_descriptor* o){if(!m||!r||!o)return IBRH_ERROR_INVALID_ARGUMENT;if(n<sizeof(*r)||r->struct_size<sizeof(*r)||c<1)return IBRH_ERROR_STRUCT_TOO_SMALL;if(r->input_count!=1||!r->inputs)return IBRH_ERROR_INVALID_ARGUMENT;auto x=model_get_port(m,IBRH_PORT_OUTPUT,0,sizeof(o[0]),&o[0]);if(x!=IBRH_OK)return x;uint32_t resolution=m->input_size;if(!input_size(copy_string(r->parameters_json),resolution,resolution))return IBRH_ERROR_INVALID_ARGUMENT;o[0].width=resolution;o[0].height=resolution;o[0].flags=0;return IBRH_OK;}
 
 ibrh_result IBRH_CALL submit(ibrh_model* model,size_t n,const ibrh_submit_request* r,ibrh_job** out){
  if(!model||!r||!out)return IBRH_ERROR_INVALID_ARGUMENT;*out=nullptr;if(n<sizeof(*r)||r->struct_size<sizeof(*r))return IBRH_ERROR_STRUCT_TOO_SMALL;
@@ -509,7 +500,7 @@ ibrh_result IBRH_CALL submit(ibrh_model* model,size_t n,const ibrh_submit_reques
  const auto&s=r->inputs[0];const auto&t=r->outputs[0];const auto&i=s.resource;const auto&o=t.resource;
  uint32_t size=model->input_size;const std::string p=copy_string(r->parameters_json);if(!input_size(p,size,size))return IBRH_ERROR_INVALID_ARGUMENT;
  const uint32_t output_format=model->metric?IBRH_PIXEL_DEPTH_METRIC_FLOAT32:IBRH_PIXEL_DEPTH_FLOAT32;
- if(!i.width||!i.height||o.width!=i.width||o.height!=i.height||o.pixel_format!=output_format)return IBRH_ERROR_INVALID_ARGUMENT;
+ if(!i.width||!i.height||o.width!=size||o.height!=size||o.pixel_format!=output_format)return IBRH_ERROR_INVALID_ARGUMENT;
  std::string reset;bool reset_stream=json_string(p,"Reset",reset)&&reset=="YES";
 #if defined(VDA_WITH_VULKAN) && defined(_WIN32)
  if(i.domain==IBRH_RESOURCE_DOMAIN_D3D12){if(!model->external_gpu||o.domain!=IBRH_RESOURCE_DOMAIN_D3D12||i.pixel_format!=IBRH_PIXEL_BGRA8||i.native_handle_type!=IBRH_NATIVE_HANDLE_WIN32_SHARED||o.native_handle_type!=IBRH_NATIVE_HANDLE_WIN32_SHARED||s.synchronization.kind!=IBRH_SYNC_D3D12_FENCE||s.synchronization.operation!=IBRH_SYNC_WAIT||t.synchronization.kind!=IBRH_SYNC_D3D12_FENCE||t.synchronization.operation!=IBRH_SYNC_SIGNAL)return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
@@ -517,19 +508,19 @@ ibrh_result IBRH_CALL submit(ibrh_model* model,size_t n,const ibrh_submit_reques
  while(occupied<3u&&!model->occupied_slots->compare_exchange_weak(occupied,occupied+1u)){}
  if(occupied>=3u)return IBRH_ERROR_INVALID_STATE;
  auto*j=new(std::nothrow)ibrh_job();if(!j){model->occupied_slots->fetch_sub(1u);return IBRH_ERROR_INTERNAL;}
- j->occupied_slots=model->occupied_slots;j->gpu_queue=model->gpu_queue;j->source_frame_id=r->source_frame_id;j->timestamp_ns=r->timestamp_ns;j->width=i.width;j->height=i.height;
+ j->occupied_slots=model->occupied_slots;j->gpu_queue=model->gpu_queue;j->source_frame_id=r->source_frame_id;j->timestamp_ns=r->timestamp_ns;j->width=o.width;j->height=o.height;
  j->request={static_cast<uintptr_t>(i.native_handle),i.auxiliary_handle,i.width,i.height,size,static_cast<uintptr_t>(s.synchronization.native_handle),s.synchronization.value,static_cast<uintptr_t>(o.native_handle),o.auxiliary_handle,o.width,o.height,static_cast<uintptr_t>(t.synchronization.native_handle),t.synchronization.value,r->source_frame_id,r->timestamp_ns,reset_stream};
  {std::lock_guard<std::mutex>l(model->gpu_queue->queue_mutex);if(model->gpu_queue->stopping){release_job(j);return IBRH_ERROR_INVALID_STATE;}retain_job(j);model->gpu_queue->queue.push_back(j);}
  model->gpu_queue->queue_condition.notify_one();*out=j;return IBRH_OK;}
 #endif
 #if defined(VDA_WITH_METAL) && defined(__APPLE__)
  if(i.domain==IBRH_RESOURCE_DOMAIN_METAL){const auto&wait=s.synchronization;const auto&signal=t.synchronization;const bool no_wait=wait.kind==IBRH_SYNC_NONE;const bool event_wait=wait.kind==IBRH_SYNC_METAL_SHARED_EVENT&&wait.operation==IBRH_SYNC_WAIT&&wait.native_handle_type==IBRH_NATIVE_HANDLE_METAL_SHARED_EVENT&&wait.native_handle!=0u;if(!model->external_gpu||o.domain!=IBRH_RESOURCE_DOMAIN_METAL||i.pixel_format!=IBRH_PIXEL_BGRA8||i.native_handle_type!=IBRH_NATIVE_HANDLE_METAL_TEXTURE||!i.native_handle||o.native_handle_type!=IBRH_NATIVE_HANDLE_METAL_TEXTURE||!o.native_handle||(!no_wait&&!event_wait)||signal.kind!=IBRH_SYNC_METAL_SHARED_EVENT||signal.operation!=IBRH_SYNC_SIGNAL||signal.native_handle_type!=IBRH_NATIVE_HANDLE_METAL_SHARED_EVENT||!signal.native_handle||!signal.value)return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
- uint32_t occupied=model->occupied_slots->load();while(occupied<3u&&!model->occupied_slots->compare_exchange_weak(occupied,occupied+1u)){}if(occupied>=3u)return IBRH_ERROR_INVALID_STATE;auto*j=new(std::nothrow)ibrh_job();if(!j){model->occupied_slots->fetch_sub(1u);return IBRH_ERROR_INTERNAL;}j->occupied_slots=model->occupied_slots;j->gpu_queue=model->gpu_queue;j->source_frame_id=r->source_frame_id;j->timestamp_ns=r->timestamp_ns;j->width=i.width;j->height=i.height;j->request={static_cast<uintptr_t>(i.native_handle),i.auxiliary_handle,i.width,i.height,size,event_wait?static_cast<uintptr_t>(wait.native_handle):0u,event_wait?wait.value:0u,static_cast<uintptr_t>(o.native_handle),o.auxiliary_handle,o.width,o.height,static_cast<uintptr_t>(signal.native_handle),signal.value,r->source_frame_id,r->timestamp_ns,reset_stream};{std::lock_guard<std::mutex>l(model->gpu_queue->queue_mutex);if(model->gpu_queue->stopping){release_job(j);return IBRH_ERROR_INVALID_STATE;}retain_job(j);model->gpu_queue->queue.push_back(j);}model->gpu_queue->queue_condition.notify_one();*out=j;return IBRH_OK;}
+ uint32_t occupied=model->occupied_slots->load();while(occupied<3u&&!model->occupied_slots->compare_exchange_weak(occupied,occupied+1u)){}if(occupied>=3u)return IBRH_ERROR_INVALID_STATE;auto*j=new(std::nothrow)ibrh_job();if(!j){model->occupied_slots->fetch_sub(1u);return IBRH_ERROR_INTERNAL;}j->occupied_slots=model->occupied_slots;j->gpu_queue=model->gpu_queue;j->source_frame_id=r->source_frame_id;j->timestamp_ns=r->timestamp_ns;j->width=o.width;j->height=o.height;j->request={static_cast<uintptr_t>(i.native_handle),i.auxiliary_handle,i.width,i.height,size,event_wait?static_cast<uintptr_t>(wait.native_handle):0u,event_wait?wait.value:0u,static_cast<uintptr_t>(o.native_handle),o.auxiliary_handle,o.width,o.height,static_cast<uintptr_t>(signal.native_handle),signal.value,r->source_frame_id,r->timestamp_ns,reset_stream};{std::lock_guard<std::mutex>l(model->gpu_queue->queue_mutex);if(model->gpu_queue->stopping){release_job(j);return IBRH_ERROR_INVALID_STATE;}retain_job(j);model->gpu_queue->queue.push_back(j);}model->gpu_queue->queue_condition.notify_one();*out=j;return IBRH_OK;}
 #endif
  if(i.domain!=IBRH_RESOURCE_DOMAIN_HOST||o.domain!=IBRH_RESOURCE_DOMAIN_HOST||i.native_handle_type!=IBRH_NATIVE_HANDLE_HOST_POINTER||o.native_handle_type!=IBRH_NATIVE_HANDLE_HOST_POINTER||i.pixel_format!=IBRH_PIXEL_BGRA8||s.synchronization.kind!=IBRH_SYNC_NONE||t.synchronization.kind!=IBRH_SYNC_NONE)return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
  const auto*bgra=reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(i.native_handle))+i.byte_offset;auto*depth=reinterpret_cast<float*>(static_cast<uintptr_t>(o.native_handle)+o.byte_offset);
- {std::lock_guard<std::mutex>l(model->submit_mutex);if(reset_stream){auto q=vda_stream_reset(model->context);if(q!=VDA_STATUS_OK)return fail(model->runtime,status_result(q),vda_last_error());}auto q=vda_infer_stream_bgra8_f32(model->context,bgra,i.row_stride_bytes,i.width,i.height,size,depth,static_cast<size_t>(i.width)*i.height);if(q!=VDA_STATUS_OK)return fail(model->runtime,status_result(q),vda_last_error());}
- auto*j=new(std::nothrow)ibrh_job();if(!j)return IBRH_ERROR_INTERNAL;j->state.store(IBRH_JOB_COMPLETE);j->source_frame_id=r->source_frame_id;j->timestamp_ns=r->timestamp_ns;j->width=i.width;j->height=i.height;*out=j;return IBRH_OK;}
+ {std::lock_guard<std::mutex>l(model->submit_mutex);if(reset_stream){auto q=vda_stream_reset(model->context);if(q!=VDA_STATUS_OK)return fail(model->runtime,status_result(q),vda_last_error());}auto q=vda_infer_stream_bgra8_f32(model->context,bgra,i.row_stride_bytes,i.width,i.height,size,depth,static_cast<size_t>(o.width)*o.height);if(q!=VDA_STATUS_OK)return fail(model->runtime,status_result(q),vda_last_error());}
+ auto*j=new(std::nothrow)ibrh_job();if(!j)return IBRH_ERROR_INTERNAL;j->state.store(IBRH_JOB_COMPLETE);j->source_frame_id=r->source_frame_id;j->timestamp_ns=r->timestamp_ns;j->width=o.width;j->height=o.height;*out=j;return IBRH_OK;}
 ibrh_result IBRH_CALL job_poll(
     const ibrh_job* job, size_t status_size, ibrh_job_status* status) {
     if (job == nullptr || status == nullptr)

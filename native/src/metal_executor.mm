@@ -657,8 +657,8 @@ public:
             !request.signal_fence_handle || !request.signal_fence_value ||
             !request.width || !request.height || !request.process_resolution ||
             request.process_resolution % 14u != 0u ||
-            request.output_width != request.width ||
-            request.output_height != request.height)
+            !request.output_width ||
+            !request.output_height)
             throw std::invalid_argument("invalid VDA Metal texture request");
         inferbridge::native_harness::metal::Prepared prepared;
         prepared.input_texture = (__bridge id<MTLTexture>)(
@@ -709,8 +709,8 @@ public:
             specs.push_back({{1,1,(NSInteger)size,(NSInteger)size},
                 MPSDataTypeFloat32,sizeof(float),
                 MTLResourceStorageModePrivate,"Seed Depth"});
-            specs.push_back({{1,1,(NSInteger)request.height,
-                (NSInteger)request.width},MPSDataTypeFloat32,sizeof(float),
+            specs.push_back({{1,1,(NSInteger)request.output_height,
+                (NSInteger)request.output_width},MPSDataTypeFloat32,sizeof(float),
                 MTLResourceStorageModePrivate,"Resized Depth"});
             specs.push_back({{2},MPSDataTypeFloat32,sizeof(float),
                 MTLResourceStorageModePrivate,"Depth Range"});
@@ -792,14 +792,14 @@ public:
             inferbridge::native_harness::metal::label_encoder(
                 encoder,"Video Depth Anything","Resize and Present Depth");
             struct ResizeParameters{uint32_t sw,sh,width,height;} rp{
-                size,size,request.width,request.height};
+                size,size,request.output_width,request.output_height};
             [encoder setComputePipelineState:resize_pipeline_];
             [encoder setBuffer:network_depth offset:0 atIndex:0];
             [encoder setBuffer:resized offset:0 atIndex:1];
             [encoder setBytes:&rp length:sizeof(rp) atIndex:2];
-            dispatch(encoder,resize_pipeline_,request.width,request.height,1);
+            dispatch(encoder,resize_pipeline_,request.output_width,request.output_height,1);
             if(!config_.metric){
-                uint32_t count=request.width*request.height;
+                uint32_t count=request.output_width*request.output_height;
                 [encoder setComputePipelineState:reduce_pipeline_];
                 [encoder setBuffer:resized offset:0 atIndex:0];
                 [encoder setBuffer:range offset:0 atIndex:1];
@@ -807,13 +807,13 @@ public:
                 dispatch(encoder,reduce_pipeline_,256,1,1);
             }
             struct OutputParameters{uint32_t width,height,normalize;} op{
-                request.width,request.height,config_.metric?0u:1u};
+                request.output_width,request.output_height,config_.metric?0u:1u};
             [encoder setComputePipelineState:output_pipeline_];
             [encoder setBuffer:resized offset:0 atIndex:0];
             [encoder setBuffer:range offset:0 atIndex:1];
             [encoder setTexture:prepared.output_texture atIndex:0];
             [encoder setBytes:&op length:sizeof(op) atIndex:2];
-            dispatch(encoder,output_pipeline_,request.width,request.height,1);
+            dispatch(encoder,output_pipeline_,request.output_width,request.output_height,1);
             [encoder endEncoding];
             [completion encodeSignalEvent:prepared.signal_event
                 value:prepared.signal_value];

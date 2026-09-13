@@ -141,8 +141,8 @@ public:
             !request.output_texture_handle || !request.signal_fence_handle ||
             !request.width || !request.height || !request.process_resolution ||
             request.process_resolution % 14u != 0u ||
-            request.output_width != request.width ||
-            request.output_height != request.height)
+            !request.output_width ||
+            !request.output_height)
             throw std::invalid_argument("invalid VDA GPU texture request");
         try {
             auto lifetime_guard = lifetime_->acquire();

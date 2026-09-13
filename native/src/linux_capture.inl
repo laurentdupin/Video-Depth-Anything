@@ -19,7 +19,7 @@ void vda_infer_linux_capture(
     float *output) {
   const auto status = vda_infer_stream_bgra8_f32_linux_impl(
       context, nullptr, source.row_stride, source.width, source.height, size,
-      output, uint64_t(source.width) * source.height, &source);
+      output, uint64_t(size) * size, &source);
   if (status != 0)
     throw std::runtime_error(vda_last_error());
 }

@@ -477,7 +477,7 @@ vda_status VDA_CALL vda_infer_stream_bgra8_f32(
         bgra_stride_bytes <
             static_cast<std::uint64_t>(width) * 4 ||
         depth_elements <
-            static_cast<std::uint64_t>(width) * height) {
+            static_cast<std::uint64_t>(input_size) * input_size) {
         return fail(
             VDA_STATUS_INVALID_ARGUMENT,
             "invalid streaming BGRA inference input");
@@ -498,8 +498,7 @@ vda_status VDA_CALL vda_infer_stream_bgra8_f32(
                 prepared.data(), network_size, network_depth.data());
             resize_stream_depth(
                 network_depth, network_size, depth,
-                static_cast<std::uint32_t>(width),
-                static_cast<std::uint32_t>(height),
+                network_size, network_size,
                 !context->config->metric);
         });
     }
@@ -608,8 +607,7 @@ vda_status VDA_CALL vda_infer_stream_bgra8_f32(
             network_depth.size() * sizeof(float));
         resize_stream_depth(
             network_depth, network_size, depth,
-            static_cast<std::uint32_t>(width),
-            static_cast<std::uint32_t>(height),
+            network_size, network_size,
             !context->config->metric);
     });
 #endif
