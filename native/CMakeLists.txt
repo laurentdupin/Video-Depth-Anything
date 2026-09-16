@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 project(video_depth_anything_native VERSION 0.1.0 LANGUAGES C CXX)
-include("${CMAKE_CURRENT_LIST_DIR}/../../native_support/InferBridgeNativeHarnessSupport.cmake")
+set(INFERBRIDGE_NATIVE_SUPPORT_DIR "" CACHE PATH
+    "InferBridge native harness SDK directory")
+if(NOT EXISTS "${INFERBRIDGE_NATIVE_SUPPORT_DIR}/InferBridgeNativeHarnessSupport.cmake")
+    message(FATAL_ERROR
+        "INFERBRIDGE_NATIVE_SUPPORT_DIR must identify the InferBridge native harness SDK")
+endif()
+include("${INFERBRIDGE_NATIVE_SUPPORT_DIR}/InferBridgeNativeHarnessSupport.cmake")
 link_libraries(InferBridge::NativeHarnessSupport)
 
 set(CMAKE_C_STANDARD 11)
