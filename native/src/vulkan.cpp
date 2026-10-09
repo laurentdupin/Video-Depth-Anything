@@ -50,150 +50,53 @@ struct VulkanSubmission::Resources {
     VulkanSemaphore timeline;
 };
 
-void VulkanContext::check(VkResult result, const char* operation) {
-    if (result != VK_SUCCESS) {
-        throw std::runtime_error(
-            std::string(operation) + " failed with Vulkan error " +
-            std::to_string(static_cast<int>(result)));
-    }
-}
+#include <inferbridge/vulkan/context/vulkan_context_check.h>
 
 VulkanSemaphore::VulkanSemaphore(VulkanSemaphore&& other) noexcept {
     *this = std::move(other);
 }
 
-VulkanSemaphore& VulkanSemaphore::operator=(
-    VulkanSemaphore&& other) noexcept {
-    if (this != &other) {
-        if (owner_) owner_->destroy(*this);
-        owner_ = std::exchange(other.owner_, nullptr);
-        semaphore_ = std::exchange(
-            other.semaphore_, VK_NULL_HANDLE);
-        value_ = std::exchange(other.value_, 0);
-    }
-    return *this;
-}
+#include <inferbridge/vulkan/context/vulkan_semaphore_operator_assign.h>
 
-VulkanSemaphore::~VulkanSemaphore() {
-    if (owner_) owner_->destroy(*this);
-}
+#include <inferbridge/vulkan/context/vulkan_semaphore_destroy_VulkanSemaphore.h>
 
 VulkanSubmission::VulkanSubmission(VulkanSubmission&& other) noexcept {
     *this = std::move(other);
 }
 
-VulkanSubmission& VulkanSubmission::operator=(
-    VulkanSubmission&& other) noexcept {
-    if (this != &other) {
-        if (owner_) owner_->destroy(*this);
-        owner_ = std::exchange(other.owner_, nullptr);
-        command_ = std::exchange(other.command_, VK_NULL_HANDLE);
-        fence_ = std::exchange(other.fence_, VK_NULL_HANDLE);
-        resources_ = std::exchange(other.resources_, nullptr);
-    }
-    return *this;
-}
+#include <inferbridge/vulkan/context/vulkan_submission_operator_assign.h>
 
-VulkanSubmission::~VulkanSubmission() {
-    if (owner_) owner_->destroy(*this);
-}
+#include <inferbridge/vulkan/context/vulkan_submission_destroy_VulkanSubmission.h>
 
-bool VulkanSubmission::ready() const {
-    if (owner_ == nullptr || fence_ == VK_NULL_HANDLE) {
-        throw std::logic_error("invalid Vulkan submission");
-    }
-    const VkResult result =
-        vkGetFenceStatus(owner_->device_, fence_);
-    if (result == VK_SUCCESS) return true;
-    if (result == VK_NOT_READY) return false;
-    VulkanContext::check(result, "vkGetFenceStatus");
-    return false;
-}
+#include <inferbridge/vulkan/context/vulkan_submission_ready.h>
 
-void VulkanSubmission::wait() const {
-    if (owner_ == nullptr || fence_ == VK_NULL_HANDLE) {
-        throw std::logic_error("invalid Vulkan submission");
-    }
-    VulkanContext::check(
-        vkWaitForFences(
-            owner_->device_, 1, &fence_, VK_TRUE, UINT64_MAX),
-        "vkWaitForFences");
-}
+#include <inferbridge/vulkan/context/vulkan_submission_wait.h>
 
 VulkanBuffer::VulkanBuffer(VulkanBuffer&& other) noexcept {
     *this = std::move(other);
 }
 
-VulkanBuffer& VulkanBuffer::operator=(VulkanBuffer&& other) noexcept {
-    if (this != &other) {
-        if (owner_) owner_->destroy(*this);
-        owner_ = std::exchange(other.owner_, nullptr);
-        buffer_ = std::exchange(other.buffer_, VK_NULL_HANDLE);
-        memory_ = std::exchange(other.memory_, VK_NULL_HANDLE);
-        size_ = std::exchange(other.size_, 0);
-        mapped_ = std::exchange(other.mapped_, nullptr);
-        cacheable_ = std::exchange(other.cacheable_, false);
-    }
-    return *this;
-}
+#include <inferbridge/vulkan/context/vulkan_buffer_operator_assign.h>
 
-VulkanBuffer::~VulkanBuffer() {
-    if (owner_) owner_->destroy(*this);
-}
+#include <inferbridge/vulkan/context/vulkan_buffer_destroy_VulkanBuffer.h>
 
 VulkanImage::VulkanImage(VulkanImage&& other) noexcept {
     *this = std::move(other);
 }
 
-VulkanImage& VulkanImage::operator=(VulkanImage&& other) noexcept {
-    if (this != &other) {
-        if (owner_) owner_->destroy(*this);
-        owner_ = std::exchange(other.owner_, nullptr);
-        image_ = std::exchange(other.image_, VK_NULL_HANDLE);
-        memory_ = std::exchange(other.memory_, VK_NULL_HANDLE);
-        view_ = std::exchange(other.view_, VK_NULL_HANDLE);
-        sampler_ = std::exchange(other.sampler_, VK_NULL_HANDLE);
-        format_ = std::exchange(
-            other.format_, VK_FORMAT_UNDEFINED);
-        width_ = std::exchange(other.width_, 0);
-        height_ = std::exchange(other.height_, 0);
-    }
-    return *this;
-}
+#include <inferbridge/vulkan/context/vulkan_image_operator_assign.h>
 
-VulkanImage::~VulkanImage() {
-    if (owner_) owner_->destroy(*this);
-}
+#include <inferbridge/vulkan/context/vulkan_image_destroy_VulkanImage.h>
 
 VulkanPipeline::VulkanPipeline(VulkanPipeline&& other) noexcept {
     *this = std::move(other);
 }
 
-VulkanPipeline& VulkanPipeline::operator=(VulkanPipeline&& other) noexcept {
-    if (this != &other) {
-        if (owner_) owner_->destroy(*this);
-        owner_ = std::exchange(other.owner_, nullptr);
-        descriptor_layout_ =
-            std::exchange(other.descriptor_layout_, VK_NULL_HANDLE);
-        layout_ = std::exchange(other.layout_, VK_NULL_HANDLE);
-        pipeline_ = std::exchange(other.pipeline_, VK_NULL_HANDLE);
-        descriptor_types_ = std::move(other.descriptor_types_);
-        descriptor_access_ = std::move(other.descriptor_access_);
-        debug_name_ = std::move(other.debug_name_);
-        cached_descriptor_sets_ =
-            std::move(other.cached_descriptor_sets_);
-        push_constant_bytes_ = std::exchange(other.push_constant_bytes_, 0);
-    }
-    return *this;
-}
+#include <inferbridge/vulkan/context/vulkan_pipeline_operator_assign.h>
 
-VulkanPipeline::~VulkanPipeline() {
-    if (owner_) owner_->destroy(*this);
-}
+#include <inferbridge/vulkan/context/vulkan_pipeline_destroy_VulkanPipeline.h>
 
-void VulkanPipeline::set_debug_name(const char* name) {
-    debug_name_ = name != nullptr ? name : "";
-}
+#include <inferbridge/vulkan/context/vulkan_pipeline_set_debug_name.h>
 
 VulkanContext::VulkanContext(
     std::uint32_t device_index,
@@ -521,901 +424,52 @@ VulkanContext::VulkanContext(
     }
 }
 
-VulkanContext::~VulkanContext() {
-    release();
-}
+#include <inferbridge/vulkan/context/vulkan_context_destroy_VulkanContext.h>
 
-void VulkanContext::release() noexcept {
-    if (device_) {
-#if defined(__linux__) && !defined(__ANDROID__)
-        vkDeviceWaitIdle(device_);
-        linux_capture_images_.clear();
-        linux_capture_pipeline_.reset();
-#endif
-        vkDeviceWaitIdle(device_);
-        print_profile();
-        cancel_batch();
-        for (VulkanDeferredBuffer& buffer : device_buffer_pool_) {
-            buffer.cacheable = false;
-            recycle_or_destroy(buffer);
-        }
-        device_buffer_pool_.clear();
-        pooled_device_bytes_ = 0;
-        for (VulkanDeferredBuffer& buffer : host_buffer_pool_) {
-            buffer.cacheable = false;
-            recycle_or_destroy(buffer);
-        }
-        host_buffer_pool_.clear();
-        pooled_host_bytes_ = 0;
-        if (descriptor_pool_) {
-            vkDestroyDescriptorPool(device_, descriptor_pool_, nullptr);
-        }
-        if (profile_query_pool_) {
-            vkDestroyQueryPool(
-                device_, profile_query_pool_, nullptr);
-        }
-        if (command_pool_) {
-            vkDestroyCommandPool(device_, command_pool_, nullptr);
-        }
-        vkDestroyDevice(device_, nullptr);
-        device_ = VK_NULL_HANDLE;
-        descriptor_pool_ = VK_NULL_HANDLE;
-        profile_query_pool_ = VK_NULL_HANDLE;
-        command_pool_ = VK_NULL_HANDLE;
-    }
-    if (instance_) {
-        vkDestroyInstance(instance_, nullptr);
-        instance_ = VK_NULL_HANDLE;
-    }
-}
+#include <inferbridge/vulkan/context/vulkan_context_release_variant_1.h>
 
-void VulkanContext::record_profile(
-    const VulkanPipeline& pipeline,
-    std::uint64_t ticks) {
-    const std::string& name = pipeline.debug_name_.empty()
-        ? std::string("unnamed")
-        : pipeline.debug_name_;
-    ProfileStat& stat = profile_stats_[name];
-    stat.total_ticks += ticks;
-    stat.maximum_ticks = std::max(stat.maximum_ticks, ticks);
-    ++stat.dispatches;
-}
+#include <inferbridge/vulkan/context/vulkan_context_record_profile.h>
 
-void VulkanContext::print_profile() const noexcept {
-    if (!profile_dispatches_ || profile_stats_.empty()) return;
-    std::vector<std::pair<std::string, ProfileStat>> sorted(
-        profile_stats_.begin(), profile_stats_.end());
-    std::sort(
-        sorted.begin(),
-        sorted.end(),
-        [](const auto& left, const auto& right) {
-            return left.second.total_ticks >
-                right.second.total_ticks;
-        });
-    std::fprintf(
-        stderr,
-        "VDA Vulkan profile: %s (GPU timestamps)\n",
-        device_name_.c_str());
-    for (const auto& [name, stat] : sorted) {
-        const double total_ms =
-            static_cast<double>(stat.total_ticks) *
-            timestamp_period_ns_ / 1.0e6;
-        const double average_ms =
-            total_ms / static_cast<double>(stat.dispatches);
-        const double maximum_ms =
-            static_cast<double>(stat.maximum_ticks) *
-            timestamp_period_ns_ / 1.0e6;
-        std::fprintf(
-            stderr,
-            "  %-34s total=%10.3f ms count=%6llu "
-            "avg=%8.4f ms max=%8.4f ms\n",
-            name.c_str(),
-            total_ms,
-            static_cast<unsigned long long>(stat.dispatches),
-            average_ms,
-            maximum_ms);
-    }
-}
+#include <inferbridge/vulkan/context/vulkan_context_print_profile_variant_2.h>
 
-std::uint32_t VulkanContext::find_memory_type(
-    std::uint32_t type_bits,
-    VkMemoryPropertyFlags properties) const {
-    for (std::uint32_t index = 0;
-         index < memory_properties_.memoryTypeCount;
-         ++index) {
-        if ((type_bits & (1u << index)) != 0 &&
-            (memory_properties_.memoryTypes[index].propertyFlags & properties) ==
-                properties) {
-            return index;
-        }
-    }
-    throw std::runtime_error("no compatible Vulkan memory type");
-}
+#include <inferbridge/vulkan/context/vulkan_context_find_memory_type.h>
 
-VulkanBuffer VulkanContext::create_buffer(
-    VkDeviceSize bytes,
-    VkBufferUsageFlags usage,
-    VkMemoryPropertyFlags properties) {
-    if (bytes == 0) {
-        throw std::invalid_argument("cannot create an empty Vulkan buffer");
-    }
-    VulkanBuffer result;
-    result.owner_ = this;
-    result.size_ = bytes;
-    const VkBufferCreateInfo buffer_info{
-        VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        nullptr,
-        0,
-        bytes,
-        usage,
-        VK_SHARING_MODE_EXCLUSIVE,
-        0,
-        nullptr,
-    };
-    check(
-        vkCreateBuffer(device_, &buffer_info, nullptr, &result.buffer_),
-        "vkCreateBuffer");
-    VkMemoryRequirements requirements{};
-    vkGetBufferMemoryRequirements(device_, result.buffer_, &requirements);
-    const VkMemoryAllocateInfo allocate_info{
-        VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        nullptr,
-        requirements.size,
-        find_memory_type(requirements.memoryTypeBits, properties),
-    };
-    check(
-        vkAllocateMemory(device_, &allocate_info, nullptr, &result.memory_),
-        "vkAllocateMemory");
-    check(
-        vkBindBufferMemory(device_, result.buffer_, result.memory_, 0),
-        "vkBindBufferMemory");
-    if ((properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
-        check(
-            vkMapMemory(
-                device_, result.memory_, 0, bytes, 0, &result.mapped_),
-            "vkMapMemory");
-    }
-    return result;
-}
+#include <inferbridge/vulkan/context/vulkan_context_create_buffer.h>
 
-VulkanBuffer VulkanContext::create_device_buffer(VkDeviceSize bytes) {
-    auto best = device_buffer_pool_.end();
-    for (auto candidate = device_buffer_pool_.begin();
-         candidate != device_buffer_pool_.end();
-         ++candidate) {
-        if (candidate->size >= bytes &&
-            (best == device_buffer_pool_.end() ||
-             candidate->size < best->size)) {
-            best = candidate;
-        }
-    }
-    if (best != device_buffer_pool_.end()) {
-        VulkanBuffer result;
-        result.owner_ = this;
-        result.buffer_ = best->buffer;
-        result.memory_ = best->memory;
-        result.size_ = best->size;
-        result.mapped_ = nullptr;
-        result.cacheable_ = true;
-        pooled_device_bytes_ -= best->size;
-        device_buffer_pool_.erase(best);
-        return result;
-    }
-    VulkanBuffer result = create_buffer(
-        bytes,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    result.cacheable_ = true;
-    return result;
-}
+#include <inferbridge/vulkan/context/vulkan_context_create_device_buffer.h>
 
 #if defined(_WIN32)
-VulkanBuffer VulkanContext::import_d3d12_buffer(
-    void* shared_handle,
-    VkDeviceSize bytes) {
-    if (!external_capabilities_.d3d12_resource_import) {
-        throw std::runtime_error(
-            "Vulkan device cannot import D3D12 resources");
-    }
-    if (shared_handle == nullptr || bytes == 0) {
-        throw std::invalid_argument(
-            "invalid D3D12 shared buffer");
-    }
-    HANDLE duplicated = nullptr;
-    if (!DuplicateHandle(
-            GetCurrentProcess(),
-            static_cast<HANDLE>(shared_handle),
-            GetCurrentProcess(),
-            &duplicated,
-            0,
-            FALSE,
-            DUPLICATE_SAME_ACCESS)) {
-        throw std::runtime_error(
-            "failed to duplicate D3D12 shared handle");
-    }
+#include <inferbridge/vulkan/context/vulkan_context_import_d3d12_buffer.h>
 
-    VulkanBuffer result;
-    result.owner_ = this;
-    result.size_ = bytes;
-    const VkExternalMemoryBufferCreateInfo external_buffer{
-        VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
-        nullptr,
-        VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT,
-    };
-    const VkBufferCreateInfo buffer_info{
-        VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        &external_buffer,
-        0,
-        bytes,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        VK_SHARING_MODE_EXCLUSIVE,
-        0,
-        nullptr,
-    };
-    try {
-        check(
-            vkCreateBuffer(
-                device_, &buffer_info, nullptr, &result.buffer_),
-            "vkCreateBuffer(D3D12 import)");
-        VkMemoryRequirements requirements{};
-        vkGetBufferMemoryRequirements(
-            device_, result.buffer_, &requirements);
-        VkMemoryWin32HandlePropertiesKHR handle_properties{
-            VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR,
-        };
-        check(
-            get_memory_win32_handle_properties_(
-                device_,
-                VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT,
-                duplicated,
-                &handle_properties),
-            "vkGetMemoryWin32HandlePropertiesKHR");
-        const VkMemoryDedicatedAllocateInfo dedicated{
-            VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
-            nullptr,
-            VK_NULL_HANDLE,
-            result.buffer_,
-        };
-        const VkImportMemoryWin32HandleInfoKHR import{
-            VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR,
-            &dedicated,
-            VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT,
-            duplicated,
-            nullptr,
-        };
-        const VkMemoryAllocateInfo allocation{
-            VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            &import,
-            requirements.size,
-            find_memory_type(
-                requirements.memoryTypeBits &
-                    handle_properties.memoryTypeBits,
-                0),
-        };
-        check(
-            vkAllocateMemory(
-                device_, &allocation, nullptr, &result.memory_),
-            "vkAllocateMemory(D3D12 import)");
-        CloseHandle(duplicated);
-        duplicated = nullptr;
-        check(
-            vkBindBufferMemory(
-                device_, result.buffer_, result.memory_, 0),
-            "vkBindBufferMemory(D3D12 import)");
-        return result;
-    } catch (...) {
-        if (duplicated != nullptr) CloseHandle(duplicated);
-        throw;
-    }
-}
+#include <inferbridge/vulkan/context/vulkan_context_import_d3d12_image.h>
 
-VulkanImage VulkanContext::import_d3d12_image(
-    void* shared_handle,
-    std::uint32_t width,
-    std::uint32_t height,
-    VkFormat format,
-    VkImageUsageFlags usage) {
-    if (!external_capabilities_.d3d12_resource_import) {
-        throw std::runtime_error(
-            "Vulkan device cannot import D3D12 resources");
-    }
-    if (shared_handle == nullptr || width == 0 || height == 0 ||
-        format == VK_FORMAT_UNDEFINED ||
-        (usage & (VK_IMAGE_USAGE_SAMPLED_BIT |
-                  VK_IMAGE_USAGE_STORAGE_BIT)) == 0) {
-        throw std::invalid_argument(
-            "invalid D3D12 shared image");
-    }
-    HANDLE duplicated = nullptr;
-    if (!DuplicateHandle(
-            GetCurrentProcess(),
-            static_cast<HANDLE>(shared_handle),
-            GetCurrentProcess(),
-            &duplicated,
-            0,
-            FALSE,
-            DUPLICATE_SAME_ACCESS)) {
-        throw std::runtime_error(
-            "failed to duplicate D3D12 image handle");
-    }
-
-    VulkanImage result;
-    result.owner_ = this;
-    result.format_ = format;
-    result.width_ = width;
-    result.height_ = height;
-    const VkExternalMemoryImageCreateInfo external_image{
-        VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
-        nullptr,
-        VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT,
-    };
-    const VkImageCreateInfo image_info{
-        VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        &external_image,
-        0,
-        VK_IMAGE_TYPE_2D,
-        format,
-        {width, height, 1},
-        1,
-        1,
-        VK_SAMPLE_COUNT_1_BIT,
-        VK_IMAGE_TILING_OPTIMAL,
-        usage,
-        VK_SHARING_MODE_EXCLUSIVE,
-        0,
-        nullptr,
-        VK_IMAGE_LAYOUT_UNDEFINED,
-    };
-    try {
-        check(
-            vkCreateImage(
-                device_, &image_info, nullptr, &result.image_),
-            "vkCreateImage(D3D12 import)");
-        VkMemoryRequirements requirements{};
-        vkGetImageMemoryRequirements(
-            device_, result.image_, &requirements);
-        VkMemoryWin32HandlePropertiesKHR handle_properties{
-            VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR,
-        };
-        check(
-            get_memory_win32_handle_properties_(
-                device_,
-                VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT,
-                duplicated,
-                &handle_properties),
-            "vkGetMemoryWin32HandlePropertiesKHR(image)");
-        const VkMemoryDedicatedAllocateInfo dedicated{
-            VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
-            nullptr,
-            result.image_,
-            VK_NULL_HANDLE,
-        };
-        const VkImportMemoryWin32HandleInfoKHR import{
-            VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR,
-            &dedicated,
-            VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT,
-            duplicated,
-            nullptr,
-        };
-        const VkMemoryAllocateInfo allocation{
-            VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            &import,
-            requirements.size,
-            find_memory_type(
-                requirements.memoryTypeBits &
-                    handle_properties.memoryTypeBits,
-                0),
-        };
-        check(
-            vkAllocateMemory(
-                device_, &allocation, nullptr, &result.memory_),
-            "vkAllocateMemory(D3D12 image import)");
-        CloseHandle(duplicated);
-        duplicated = nullptr;
-        check(
-            vkBindImageMemory(
-                device_, result.image_, result.memory_, 0),
-            "vkBindImageMemory(D3D12 import)");
-        const VkImageViewCreateInfo view_info{
-            VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            nullptr,
-            0,
-            result.image_,
-            VK_IMAGE_VIEW_TYPE_2D,
-            format,
-            {
-                VK_COMPONENT_SWIZZLE_IDENTITY,
-                VK_COMPONENT_SWIZZLE_IDENTITY,
-                VK_COMPONENT_SWIZZLE_IDENTITY,
-                VK_COMPONENT_SWIZZLE_IDENTITY,
-            },
-            {
-                VK_IMAGE_ASPECT_COLOR_BIT,
-                0,
-                1,
-                0,
-                1,
-            },
-        };
-        check(
-            vkCreateImageView(
-                device_, &view_info, nullptr, &result.view_),
-            "vkCreateImageView(D3D12 import)");
-        if ((usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0) {
-            const VkSamplerCreateInfo sampler_info{
-                VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-                nullptr,
-                0,
-                VK_FILTER_NEAREST,
-                VK_FILTER_NEAREST,
-                VK_SAMPLER_MIPMAP_MODE_NEAREST,
-                VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                0.0f,
-                VK_FALSE,
-                1.0f,
-                VK_FALSE,
-                VK_COMPARE_OP_ALWAYS,
-                0.0f,
-                0.0f,
-                VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
-                VK_FALSE,
-            };
-            check(
-                vkCreateSampler(
-                    device_,
-                    &sampler_info,
-                    nullptr,
-                    &result.sampler_),
-                "vkCreateSampler(D3D12 import)");
-        }
-        return result;
-    } catch (...) {
-        if (duplicated != nullptr) CloseHandle(duplicated);
-        throw;
-    }
-}
-
-VulkanSemaphore VulkanContext::import_d3d12_fence(
-    void* shared_handle,
-    std::uint64_t value) {
-    if (!external_capabilities_.d3d12_fence_import) {
-        throw std::runtime_error(
-            "Vulkan device cannot import D3D12 fences");
-    }
-    if (shared_handle == nullptr) {
-        throw std::invalid_argument(
-            "invalid D3D12 shared fence");
-    }
-    HANDLE duplicated = nullptr;
-    if (!DuplicateHandle(
-            GetCurrentProcess(),
-            static_cast<HANDLE>(shared_handle),
-            GetCurrentProcess(),
-            &duplicated,
-            0,
-            FALSE,
-            DUPLICATE_SAME_ACCESS)) {
-        throw std::runtime_error(
-            "failed to duplicate D3D12 fence handle");
-    }
-    VulkanSemaphore result;
-    result.owner_ = this;
-    result.value_ = value;
-    const VkSemaphoreCreateInfo semaphore_info{
-        VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-        nullptr,
-        0,
-    };
-    try {
-        check(
-            vkCreateSemaphore(
-                device_,
-                &semaphore_info,
-                nullptr,
-                &result.semaphore_),
-            "vkCreateSemaphore(D3D12 import)");
-        const VkImportSemaphoreWin32HandleInfoKHR import{
-            VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_WIN32_HANDLE_INFO_KHR,
-            nullptr,
-            result.semaphore_,
-            0,
-            VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT,
-            duplicated,
-            nullptr,
-        };
-        check(
-            import_semaphore_win32_handle_(device_, &import),
-            "vkImportSemaphoreWin32HandleKHR");
-        CloseHandle(duplicated);
-        return result;
-    } catch (...) {
-        CloseHandle(duplicated);
-        throw;
-    }
-}
+#include <inferbridge/vulkan/context/vulkan_context_import_d3d12_fence.h>
 
 #endif
 
-VulkanBuffer VulkanContext::create_host_buffer(VkDeviceSize bytes) {
-    auto best = host_buffer_pool_.end();
-    for (auto candidate = host_buffer_pool_.begin();
-         candidate != host_buffer_pool_.end();
-         ++candidate) {
-        if (candidate->size >= bytes &&
-            (best == host_buffer_pool_.end() ||
-             candidate->size < best->size)) {
-            best = candidate;
-        }
-    }
-    if (best != host_buffer_pool_.end()) {
-        VulkanBuffer result;
-        result.owner_ = this;
-        result.buffer_ = best->buffer;
-        result.memory_ = best->memory;
-        result.size_ = best->size;
-        result.mapped_ = best->mapped;
-        result.cacheable_ = true;
-        pooled_host_bytes_ -= best->size;
-        host_buffer_pool_.erase(best);
-        return result;
-    }
-    VulkanBuffer result = create_buffer(
-        bytes,
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-            VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    result.cacheable_ = true;
-    return result;
-}
+#include <inferbridge/vulkan/context/vulkan_context_create_host_buffer.h>
 
-void VulkanContext::write_host(
-    VulkanBuffer& destination,
-    const void* data,
-    std::size_t bytes) {
-    if (destination.owner_ != this || destination.mapped_ == nullptr ||
-        data == nullptr || bytes > destination.size_) {
-        throw std::invalid_argument("invalid Vulkan host write");
-    }
-    std::memcpy(destination.mapped_, data, bytes);
-}
+#include <inferbridge/vulkan/context/vulkan_context_write_host.h>
 
-VkCommandBuffer VulkanContext::begin_commands() {
-    const VkCommandBufferAllocateInfo allocate_info{
-        VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        nullptr,
-        command_pool_,
-        VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        1,
-    };
-    VkCommandBuffer command = VK_NULL_HANDLE;
-    check(
-        vkAllocateCommandBuffers(device_, &allocate_info, &command),
-        "vkAllocateCommandBuffers");
-    const VkCommandBufferBeginInfo begin_info{
-        VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        nullptr,
-        VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-        nullptr,
-    };
-    check(vkBeginCommandBuffer(command, &begin_info), "vkBeginCommandBuffer");
-    return command;
-}
+#include <inferbridge/vulkan/context/vulkan_context_begin_commands.h>
 
-void VulkanContext::end_commands(
-    VkCommandBuffer command,
-    const VulkanSemaphore* wait) {
-    VulkanSubmission submission = submit_commands(command, wait);
-    submission.wait();
-}
+#include <inferbridge/vulkan/context/vulkan_context_end_commands.h>
 
-VulkanSubmission VulkanContext::submit_commands(
-    VkCommandBuffer command,
-    const VulkanSemaphore* wait,
-    const VulkanSemaphore* signal) {
-    if (wait != nullptr && wait->owner_ != this) {
-        vkFreeCommandBuffers(device_, command_pool_, 1, &command);
-        throw std::invalid_argument(
-            "foreign Vulkan wait semaphore");
-    }
-    if (signal != nullptr && signal->owner_ != this) {
-        vkFreeCommandBuffers(device_, command_pool_, 1, &command);
-        throw std::invalid_argument(
-            "foreign Vulkan signal semaphore");
-    }
-    try {
-        check(vkEndCommandBuffer(command), "vkEndCommandBuffer");
-    } catch (...) {
-        vkFreeCommandBuffers(device_, command_pool_, 1, &command);
-        throw;
-    }
-    VkFence fence = VK_NULL_HANDLE;
-    const VkFenceCreateInfo fence_info{
-        VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-        nullptr,
-        0,
-    };
-    try {
-        check(
-            vkCreateFence(device_, &fence_info, nullptr, &fence),
-            "vkCreateFence");
-    } catch (...) {
-        vkFreeCommandBuffers(device_, command_pool_, 1, &command);
-        throw;
-    }
-    const VkPipelineStageFlags wait_stage =
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-#if defined(_WIN32)
-    const std::uint64_t wait_value =
-        wait != nullptr ? wait->value_ : 0;
-    const std::uint64_t signal_value =
-        signal != nullptr ? signal->value_ : 0;
-    const VkD3D12FenceSubmitInfoKHR d3d12_values{
-        VK_STRUCTURE_TYPE_D3D12_FENCE_SUBMIT_INFO_KHR,
-        nullptr,
-        wait != nullptr ? 1u : 0u,
-        wait != nullptr ? &wait_value : nullptr,
-        signal != nullptr ? 1u : 0u,
-        signal != nullptr ? &signal_value : nullptr,
-    };
-#endif
-    const VkSemaphore wait_handle =
-        wait != nullptr ? wait->semaphore_ : VK_NULL_HANDLE;
-    const VkSemaphore signal_handle =
-        signal != nullptr ? signal->semaphore_ : VK_NULL_HANDLE;
-    const VkSubmitInfo submit{
-        VK_STRUCTURE_TYPE_SUBMIT_INFO,
-#if defined(_WIN32)
-        wait != nullptr || signal != nullptr ? &d3d12_values : nullptr,
-#else
-        nullptr,
-#endif
-        wait != nullptr ? 1u : 0u,
-        wait != nullptr ? &wait_handle : nullptr,
-        wait != nullptr ? &wait_stage : nullptr,
-        1,
-        &command,
-        signal != nullptr ? 1u : 0u,
-        signal != nullptr ? &signal_handle : nullptr,
-    };
-    const VkResult submitted =
-        vkQueueSubmit(queue_, 1, &submit, fence);
-    if (submitted != VK_SUCCESS) {
-        vkDestroyFence(device_, fence, nullptr);
-        vkFreeCommandBuffers(device_, command_pool_, 1, &command);
-        check(submitted, "vkQueueSubmit");
-    }
-    VulkanSubmission result;
-    result.owner_ = this;
-    result.command_ = command;
-    result.fence_ = fence;
-    return result;
-}
+#include <inferbridge/vulkan/context/vulkan_context_submit_commands.h>
 
-void VulkanContext::begin_batch() {
-    if (batch_command_ != VK_NULL_HANDLE) {
-        throw std::logic_error("nested Vulkan batch");
-    }
-    batch_command_ = begin_commands();
-    batch_has_dispatch_ = false;
-    batch_buffer_access_.clear();
-    batch_image_access_.clear();
-    batch_image_layout_.clear();
-}
+#include <inferbridge/vulkan/context/vulkan_context_begin_batch.h>
 
-void VulkanContext::release_batch_resources() noexcept {
-    for (const VulkanBatchedDescriptor& descriptor :
-         batch_descriptor_sets_) {
-        if (descriptor.pipeline && descriptor.set) {
-            descriptor.pipeline->cached_descriptor_sets_.push_back(
-                descriptor.set);
-        }
-    }
-    batch_descriptor_sets_.clear();
-    for (const VulkanDeferredBuffer& buffer : batch_deferred_buffers_) {
-        recycle_or_destroy(buffer);
-    }
-    batch_deferred_buffers_.clear();
-    batch_buffer_access_.clear();
-    batch_image_access_.clear();
-    batch_image_layout_.clear();
-}
+#include <inferbridge/vulkan/context/vulkan_context_release_batch_resources.h>
 
-VulkanSubmission VulkanContext::end_batch_async(
-    VulkanSemaphore wait,
-    VulkanSemaphore signal) {
-    if (batch_command_ == VK_NULL_HANDLE) {
-        throw std::logic_error("no active Vulkan batch");
-    }
-    auto resources = std::make_unique<VulkanSubmission::Resources>();
-    resources->descriptor_sets = std::move(batch_descriptor_sets_);
-    resources->deferred_buffers = std::move(batch_deferred_buffers_);
-    resources->wait = std::move(wait);
-    resources->signal = std::move(signal);
-    VkCommandBuffer command = batch_command_;
-    batch_command_ = VK_NULL_HANDLE;
-    batch_has_dispatch_ = false;
-    try {
-        VulkanSubmission result = submit_commands(
-            command, &resources->wait, &resources->signal);
-        result.resources_ = resources.release();
-        return result;
-    } catch (...) {
-        for (const VulkanBatchedDescriptor& descriptor :
-             resources->descriptor_sets) {
-            if (descriptor.pipeline && descriptor.set) {
-                descriptor.pipeline->cached_descriptor_sets_.push_back(
-                    descriptor.set);
-            }
-        }
-        for (const VulkanDeferredBuffer& buffer :
-             resources->deferred_buffers) {
-            recycle_or_destroy(buffer);
-        }
-        throw;
-    }
-}
+#include <inferbridge/vulkan/context/vulkan_context_end_batch_async_variant_1.h>
 
-void VulkanContext::end_batch() {
-    if (batch_command_ == VK_NULL_HANDLE) {
-        throw std::logic_error("no active Vulkan batch");
-    }
-    VkCommandBuffer command = batch_command_;
-    batch_command_ = VK_NULL_HANDLE;
-    batch_has_dispatch_ = false;
-    end_commands(command);
-    release_batch_resources();
-}
+#include <inferbridge/vulkan/context/vulkan_context_end_batch.h>
 
-void VulkanContext::cancel_batch() noexcept {
-    if (batch_command_ != VK_NULL_HANDLE) {
-        vkFreeCommandBuffers(
-            device_, command_pool_, 1, &batch_command_);
-        batch_command_ = VK_NULL_HANDLE;
-    }
-    for (VkCommandBuffer command : batch_commands_) {
-        vkFreeCommandBuffers(device_, command_pool_, 1, &command);
-    }
-    batch_commands_.clear();
-    segmented_batch_ = false;
-    segment_has_commands_ = false;
-    batch_has_dispatch_ = false;
-    release_batch_resources();
-}
+#include <inferbridge/vulkan/context/vulkan_context_cancel_batch_variant_2.h>
 
-VulkanSubmission VulkanContext::end_segmented_batch_async(
-    VulkanSemaphore wait,
-    VulkanSemaphore signal) {
-    if (!segmented_batch_) {
-        throw std::logic_error("no active segmented Vulkan batch");
-    }
-    finish_segment();
-    if (batch_command_ != VK_NULL_HANDLE) {
-        vkFreeCommandBuffers(device_, command_pool_, 1, &batch_command_);
-        batch_command_ = VK_NULL_HANDLE;
-    }
-    segmented_batch_ = false;
-    if (batch_commands_.empty()) {
-        throw std::logic_error("empty segmented Vulkan batch");
-    }
-    auto resources = std::make_unique<VulkanSubmission::Resources>();
-    resources->descriptor_sets = std::move(batch_descriptor_sets_);
-    resources->deferred_buffers = std::move(batch_deferred_buffers_);
-    resources->commands = std::move(batch_commands_);
-    resources->wait = std::move(wait);
-    resources->signal = std::move(signal);
-    if (resources->commands.size() > 1u)
-        resources->timeline = create_timeline_semaphore(0u);
+#include <inferbridge/vulkan/context/vulkan_context_end_segmented_batch_async.h>
 
-    VkFence fence = VK_NULL_HANDLE;
-    const VkFenceCreateInfo fence_info{
-        VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, 0};
-    check(vkCreateFence(device_, &fence_info, nullptr, &fence),
-          "vkCreateFence(segmented)");
-    struct SubmitStorage {
-        std::array<VkSemaphore, 1> waits{};
-        std::array<VkSemaphore, 1> signals{};
-        std::array<VkPipelineStageFlags, 1> stages{
-            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
-        std::array<std::uint64_t, 1> wait_values{};
-        std::array<std::uint64_t, 1> signal_values{};
-        VkTimelineSemaphoreSubmitInfo timeline{
-            VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
-#if defined(_WIN32)
-        VkD3D12FenceSubmitInfoKHR d3d12{
-            VK_STRUCTURE_TYPE_D3D12_FENCE_SUBMIT_INFO_KHR};
-#endif
-        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    };
-    std::vector<SubmitStorage> storage(resources->commands.size());
-    const std::size_t last = resources->commands.size() - 1u;
-    for (std::size_t index = 0; index <= last; ++index) {
-        SubmitStorage& item = storage[index];
-        const bool first = index == 0u;
-        const bool final = index == last;
-        item.waits[0] = first
-            ? resources->wait.semaphore_
-            : resources->timeline.semaphore_;
-        item.wait_values[0] = first
-            ? resources->wait.value_
-            : static_cast<std::uint64_t>(index);
-        item.signals[0] = final
-            ? resources->signal.semaphore_
-            : resources->timeline.semaphore_;
-        item.signal_values[0] = final
-            ? resources->signal.value_
-            : static_cast<std::uint64_t>(index + 1u);
-        item.timeline.waitSemaphoreValueCount = 1u;
-        item.timeline.pWaitSemaphoreValues = item.wait_values.data();
-        item.timeline.signalSemaphoreValueCount = 1u;
-        item.timeline.pSignalSemaphoreValues = item.signal_values.data();
-#if defined(_WIN32)
-        if (first || final) {
-            item.d3d12.pNext = &item.timeline;
-            item.d3d12.waitSemaphoreValuesCount = 1u;
-            item.d3d12.pWaitSemaphoreValues = item.wait_values.data();
-            item.d3d12.signalSemaphoreValuesCount = 1u;
-            item.d3d12.pSignalSemaphoreValues = item.signal_values.data();
-            item.submit.pNext = &item.d3d12;
-        } else {
-            item.submit.pNext = &item.timeline;
-        }
-#else
-        item.submit.pNext = &item.timeline;
-#endif
-        item.submit.waitSemaphoreCount = 1u;
-        item.submit.pWaitSemaphores = item.waits.data();
-        item.submit.pWaitDstStageMask = item.stages.data();
-        item.submit.commandBufferCount = 1u;
-        item.submit.pCommandBuffers = &resources->commands[index];
-        item.submit.signalSemaphoreCount = 1u;
-        item.submit.pSignalSemaphores = item.signals.data();
-    }
-    std::vector<VkSubmitInfo> submits;
-    submits.reserve(storage.size());
-    for (const SubmitStorage& item : storage) submits.push_back(item.submit);
-    VkResult submitted = VK_SUCCESS;
-    for (std::size_t index = 0; index < submits.size(); ++index) {
-        submitted = vkQueueSubmit(
-            queue_, 1u, &submits[index],
-            index + 1u == submits.size() ? fence : VK_NULL_HANDLE);
-        if (submitted != VK_SUCCESS) break;
-    }
-    if (submitted != VK_SUCCESS) {
-        vkDestroyFence(device_, fence, nullptr);
-        for (VkCommandBuffer command : resources->commands)
-            vkFreeCommandBuffers(device_, command_pool_, 1, &command);
-        resources->commands.clear();
-        check(submitted, "vkQueueSubmit(segmented)");
-    }
-    VulkanSubmission result;
-    result.owner_ = this;
-    result.fence_ = fence;
-    result.resources_ = resources.release();
-    return result;
-}
-
-void VulkanContext::begin_segmented_batch() {
-    if (batch_command_ != VK_NULL_HANDLE || segmented_batch_) {
-        throw std::logic_error("nested Vulkan batch");
-    }
-    segmented_batch_ = true;
-    batch_command_ = begin_commands();
-    segment_has_commands_ = false;
-    batch_has_dispatch_ = false;
-    batch_commands_.clear();
-    batch_buffer_access_.clear();
-    batch_image_access_.clear();
-    batch_image_layout_.clear();
-}
+#include <inferbridge/vulkan/context/vulkan_context_begin_segmented_batch.h>
 
 VkCommandBuffer VulkanContext::active_batch_command() {
     if (batch_command_ == VK_NULL_HANDLE && segmented_batch_) {
@@ -1524,102 +578,15 @@ void VulkanContext::copy_buffer_raw(
     }
 }
 
-void VulkanContext::copy(
-    VulkanBuffer& destination,
-    VkDeviceSize destination_offset,
-    const VulkanBuffer& source,
-    VkDeviceSize source_offset,
-    VkDeviceSize bytes) {
-    if (destination.owner_ != this || source.owner_ != this ||
-        destination_offset > destination.size_ ||
-        source_offset > source.size_ ||
-        bytes > destination.size_ - destination_offset ||
-        bytes > source.size_ - source_offset) {
-        throw std::invalid_argument("invalid Vulkan buffer copy");
-    }
-    copy_buffer_raw(
-        source.buffer_, destination.buffer_,
-        source_offset, destination_offset, bytes);
-}
+#include <inferbridge/vulkan/context/vulkan_context_copy.h>
 
-void VulkanContext::upload(
-    VulkanBuffer& destination,
-    const void* data,
-    std::size_t bytes) {
-    if (data == nullptr || bytes > destination.size_) {
-        throw std::invalid_argument("invalid Vulkan upload");
-    }
-    tensor_upload_bytes_.fetch_add(
-        static_cast<std::uint64_t>(bytes),
-        std::memory_order_relaxed);
-    g_tensor_upload_bytes.fetch_add(
-        static_cast<std::uint64_t>(bytes), std::memory_order_relaxed);
-    VulkanBuffer staging = create_host_buffer(bytes);
-    std::memcpy(staging.mapped_, data, bytes);
-    copy_buffer_raw(
-        staging.buffer_, destination.buffer_, 0, 0, bytes);
-}
+#include <inferbridge/vulkan/context/vulkan_context_upload_variant_2.h>
 
-void VulkanContext::download(
-    const VulkanBuffer& source,
-    void* data,
-    std::size_t bytes) {
-    if (data == nullptr || bytes > source.size_) {
-        throw std::invalid_argument("invalid Vulkan download");
-    }
-    tensor_download_bytes_.fetch_add(
-        static_cast<std::uint64_t>(bytes),
-        std::memory_order_relaxed);
-    g_tensor_download_bytes.fetch_add(
-        static_cast<std::uint64_t>(bytes), std::memory_order_relaxed);
-    VulkanBuffer staging = create_host_buffer(bytes);
-    copy_buffer_raw(
-        source.buffer_, staging.buffer_, 0, 0, bytes);
-    std::memcpy(data, staging.mapped_, bytes);
-}
+#include <inferbridge/vulkan/context/vulkan_context_download_variant_1.h>
 
-void VulkanContext::transfer_counters(
-    std::uint64_t& upload_bytes,
-    std::uint64_t& download_bytes) const {
-    upload_bytes =
-        tensor_upload_bytes_.load(std::memory_order_relaxed);
-    download_bytes =
-        tensor_download_bytes_.load(std::memory_order_relaxed);
-}
+#include <inferbridge/vulkan/context/vulkan_context_transfer_counters.h>
 
-void VulkanContext::acquire_external_buffer(
-    const VulkanBuffer& buffer,
-    VkAccessFlags destination_access) {
-    if ((!segmented_batch_ && batch_command_ == VK_NULL_HANDLE) ||
-        buffer.owner_ != this ||
-        buffer.buffer_ == VK_NULL_HANDLE) {
-        throw std::invalid_argument(
-            "external buffer acquire requires an active batch");
-    }
-    const VkBufferMemoryBarrier barrier{
-        VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-        nullptr,
-        0,
-        destination_access,
-        VK_QUEUE_FAMILY_EXTERNAL,
-        queue_family_,
-        buffer.buffer_,
-        0,
-        buffer.size_,
-    };
-    vkCmdPipelineBarrier(
-        active_batch_command(),
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0,
-        0,
-        nullptr,
-        1,
-        &barrier,
-        0,
-        nullptr);
-    segment_has_commands_ = true;
-}
+#include <inferbridge/vulkan/context/vulkan_context_acquire_external_buffer_variant_2.h>
 
 void global_transfer_counters(
     std::uint64_t& upload_bytes,
@@ -1628,372 +595,28 @@ void global_transfer_counters(
     download_bytes = g_tensor_download_bytes.load(std::memory_order_relaxed);
 }
 
-void VulkanContext::release_external_buffer(
-    const VulkanBuffer& buffer,
-    VkAccessFlags source_access) {
-    if ((!segmented_batch_ && batch_command_ == VK_NULL_HANDLE) ||
-        buffer.owner_ != this ||
-        buffer.buffer_ == VK_NULL_HANDLE) {
-        throw std::invalid_argument(
-            "external buffer release requires an active batch");
-    }
-    const VkBufferMemoryBarrier barrier{
-        VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-        nullptr,
-        source_access,
-        0,
-        queue_family_,
-        VK_QUEUE_FAMILY_EXTERNAL,
-        buffer.buffer_,
-        0,
-        buffer.size_,
-    };
-    vkCmdPipelineBarrier(
-        active_batch_command(),
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        0,
-        0,
-        nullptr,
-        1,
-        &barrier,
-        0,
-        nullptr);
-    segment_has_commands_ = true;
-}
+#include <inferbridge/vulkan/context/vulkan_context_release_external_buffer_variant_1.h>
 
 #include <inferbridge/linux_capture_vulkan_context.inl>
 
 
-void VulkanContext::acquire_external_image(
-    const VulkanImage& image,
-    VkImageLayout layout,
-    VkAccessFlags destination_access) {
-    if ((!segmented_batch_ && batch_command_ == VK_NULL_HANDLE) ||
-        image.owner_ != this ||
-        image.image_ == VK_NULL_HANDLE) {
-        throw std::invalid_argument(
-            "external image acquire requires an active batch");
-    }
-    const VkImageMemoryBarrier barrier{
-        VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        nullptr,
-        0,
-        destination_access,
-        VK_IMAGE_LAYOUT_GENERAL,
-        layout,
-#if defined(__linux__) && !defined(__ANDROID__)
-        VK_QUEUE_FAMILY_FOREIGN_EXT,
-#else
-        VK_QUEUE_FAMILY_EXTERNAL,
-#endif
-        queue_family_,
-        image.image_,
-        {
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            0,
-            1,
-            0,
-            1,
-        },
-    };
-    vkCmdPipelineBarrier(
-        active_batch_command(),
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0,
-        0,
-        nullptr,
-        0,
-        nullptr,
-        1,
-        &barrier);
-    segment_has_commands_ = true;
-}
+#include <inferbridge/vulkan/context/vulkan_context_acquire_external_image_variant_2.h>
 
-void VulkanContext::release_external_image(
-    const VulkanImage& image,
-    VkImageLayout layout,
-    VkAccessFlags source_access) {
-    if ((!segmented_batch_ && batch_command_ == VK_NULL_HANDLE) ||
-        image.owner_ != this ||
-        image.image_ == VK_NULL_HANDLE) {
-        throw std::invalid_argument(
-            "external image release requires an active batch");
-    }
-    const VkImageMemoryBarrier barrier{
-        VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        nullptr,
-        source_access,
-        0,
-        layout,
-        VK_IMAGE_LAYOUT_GENERAL,
-        queue_family_,
-#if defined(__linux__) && !defined(__ANDROID__)
-        VK_QUEUE_FAMILY_FOREIGN_EXT,
-#else
-        VK_QUEUE_FAMILY_EXTERNAL,
-#endif
-        image.image_,
-        {
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            0,
-            1,
-            0,
-            1,
-        },
-    };
-    vkCmdPipelineBarrier(
-        active_batch_command(),
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        0,
-        0,
-        nullptr,
-        0,
-        nullptr,
-        1,
-        &barrier);
-    segment_has_commands_ = true;
-}
+#include <inferbridge/vulkan/context/vulkan_context_release_external_image_variant_1.h>
 
-VulkanPipeline VulkanContext::create_pipeline(
-    const std::uint32_t* spirv,
-    std::size_t spirv_bytes,
-    std::uint32_t binding_count,
-    std::uint32_t push_constant_bytes) {
-    std::vector<VkAccessFlags> access(
-        binding_count, VK_ACCESS_SHADER_READ_BIT);
-    if (!access.empty()) {
-        access[0] = VK_ACCESS_SHADER_WRITE_BIT;
-    }
-    return create_pipeline(
-        spirv,
-        spirv_bytes,
-        std::vector<VkDescriptorType>(
-            binding_count, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER),
-        access,
-        push_constant_bytes);
-}
+#include <inferbridge/vulkan/context/vulkan_context_create_pipeline_variant_4.h>
 
-VulkanPipeline VulkanContext::create_pipeline(
-    const std::uint32_t* spirv,
-    std::size_t spirv_bytes,
-    const std::vector<VkDescriptorType>& descriptor_types,
-    std::uint32_t push_constant_bytes) {
-    std::vector<VkAccessFlags> access(
-        descriptor_types.size(), VK_ACCESS_SHADER_READ_BIT);
-    if (!access.empty()) {
-        access[0] = VK_ACCESS_SHADER_WRITE_BIT;
-    }
-    return create_pipeline(
-        spirv,
-        spirv_bytes,
-        descriptor_types,
-        access,
-        push_constant_bytes);
-}
+#include <inferbridge/vulkan/context/vulkan_context_create_pipeline_variant_1.h>
 
-VulkanPipeline VulkanContext::create_pipeline(
-    const std::uint32_t* spirv,
-    std::size_t spirv_bytes,
-    const std::vector<VkDescriptorType>& descriptor_types,
-    const std::vector<VkAccessFlags>& descriptor_access,
-    std::uint32_t push_constant_bytes) {
-    if (spirv == nullptr || spirv_bytes == 0 || spirv_bytes % 4 != 0 ||
-        descriptor_types.empty() ||
-        descriptor_access.size() != descriptor_types.size() ||
-        std::any_of(
-            descriptor_access.begin(),
-            descriptor_access.end(),
-            [](VkAccessFlags access) {
-                constexpr VkAccessFlags allowed =
-                    VK_ACCESS_SHADER_READ_BIT |
-                    VK_ACCESS_SHADER_WRITE_BIT;
-                return access == 0 || (access & ~allowed) != 0;
-            }) ||
-        push_constant_bytes > 128 ||
-        push_constant_bytes % 4 != 0) {
-        throw std::invalid_argument("invalid compute pipeline description");
-    }
-    VulkanPipeline result;
-    result.owner_ = this;
-    result.descriptor_types_ = descriptor_types;
-    result.descriptor_access_ = descriptor_access;
-    result.push_constant_bytes_ = push_constant_bytes;
+#include <inferbridge/vulkan/context/vulkan_context_create_pipeline_variant_3.h>
 
-    std::vector<VkDescriptorSetLayoutBinding> bindings(
-        descriptor_types.size());
-    for (std::uint32_t index = 0; index < descriptor_types.size(); ++index) {
-        bindings[index] = {
-            index,
-            descriptor_types[index],
-            1,
-            VK_SHADER_STAGE_COMPUTE_BIT,
-            nullptr,
-        };
-    }
-    const VkDescriptorSetLayoutCreateInfo descriptor_info{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        nullptr,
-        0,
-        static_cast<std::uint32_t>(bindings.size()),
-        bindings.data(),
-    };
-    check(
-        vkCreateDescriptorSetLayout(
-            device_, &descriptor_info, nullptr, &result.descriptor_layout_),
-        "vkCreateDescriptorSetLayout");
+#include <inferbridge/vulkan/context/vulkan_context_dispatch.h>
 
-    VkPushConstantRange push_range{
-        VK_SHADER_STAGE_COMPUTE_BIT,
-        0,
-        push_constant_bytes,
-    };
-    const VkPipelineLayoutCreateInfo layout_info{
-        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        nullptr,
-        0,
-        1,
-        &result.descriptor_layout_,
-        push_constant_bytes ? 1u : 0u,
-        push_constant_bytes ? &push_range : nullptr,
-    };
-    check(
-        vkCreatePipelineLayout(
-            device_, &layout_info, nullptr, &result.layout_),
-        "vkCreatePipelineLayout");
+#include <inferbridge/vulkan/context/vulkan_context_dispatch_image_to_buffer.h>
 
-    const VkShaderModuleCreateInfo shader_info{
-        VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        nullptr,
-        0,
-        spirv_bytes,
-        spirv,
-    };
-    VkShaderModule shader = VK_NULL_HANDLE;
-    check(
-        vkCreateShaderModule(device_, &shader_info, nullptr, &shader),
-        "vkCreateShaderModule");
-    const VkPipelineShaderStageCreateInfo stage{
-        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-        nullptr,
-        0,
-        VK_SHADER_STAGE_COMPUTE_BIT,
-        shader,
-        "main",
-        nullptr,
-    };
-    const VkComputePipelineCreateInfo pipeline_info{
-        VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-        nullptr,
-        0,
-        stage,
-        result.layout_,
-        VK_NULL_HANDLE,
-        -1,
-    };
-    try {
-        check(
-            vkCreateComputePipelines(
-                device_,
-                VK_NULL_HANDLE,
-                1,
-                &pipeline_info,
-                nullptr,
-                &result.pipeline_),
-            "vkCreateComputePipelines");
-    } catch (...) {
-        vkDestroyShaderModule(device_, shader, nullptr);
-        throw;
-    }
-    vkDestroyShaderModule(device_, shader, nullptr);
-    return result;
-}
+#include <inferbridge/vulkan/context/vulkan_context_dispatch_buffer_to_image.h>
 
-void VulkanContext::dispatch(
-    const VulkanPipeline& pipeline,
-    const std::vector<const VulkanBuffer*>& buffers,
-    const void* push_constants,
-    std::uint32_t push_constant_bytes,
-    std::uint32_t group_x,
-    std::uint32_t group_y,
-    std::uint32_t group_z,
-    const VulkanSemaphore* wait) {
-    std::vector<VulkanDispatchResource> resources;
-    resources.reserve(buffers.size());
-    for (const VulkanBuffer* buffer : buffers) {
-        resources.push_back({buffer, nullptr});
-    }
-    dispatch_resources(
-        pipeline,
-        resources,
-        push_constants,
-        push_constant_bytes,
-        group_x,
-        group_y,
-        group_z,
-        wait);
-}
-
-void VulkanContext::dispatch_image_to_buffer(
-    const VulkanPipeline& pipeline,
-    const VulkanImage& image,
-    VulkanBuffer& buffer,
-    const void* push_constants,
-    std::uint32_t push_constant_bytes,
-    std::uint32_t group_x,
-    std::uint32_t group_y,
-    std::uint32_t group_z) {
-    dispatch_resources(
-        pipeline,
-        {{nullptr, &image}, {&buffer, nullptr}},
-        push_constants,
-        push_constant_bytes,
-        group_x,
-        group_y,
-        group_z,
-        nullptr);
-}
-
-void VulkanContext::dispatch_buffer_to_image(
-    const VulkanPipeline& pipeline,
-    const VulkanBuffer& buffer,
-    VulkanImage& image,
-    const void* push_constants,
-    std::uint32_t push_constant_bytes,
-    std::uint32_t group_x,
-    std::uint32_t group_y,
-    std::uint32_t group_z) {
-    dispatch_resources(
-        pipeline,
-        {{nullptr, &image}, {&buffer, nullptr}},
-        push_constants,
-        push_constant_bytes,
-        group_x,
-        group_y,
-        group_z,
-        nullptr);
-}
-
-void VulkanContext::dispatch_buffers_to_image(
-    const VulkanPipeline& pipeline,
-    const std::vector<const VulkanBuffer*>& buffers,
-    VulkanImage& image,
-    const void* push_constants,
-    std::uint32_t push_constant_bytes,
-    std::uint32_t group_x,
-    std::uint32_t group_y,
-    std::uint32_t group_z) {
-    std::vector<VulkanDispatchResource> resources;
-    resources.reserve(buffers.size() + 1u);
-    resources.push_back({nullptr, &image});
-    for (const VulkanBuffer* buffer : buffers)
-        resources.push_back({buffer, nullptr});
-    dispatch_resources(
-        pipeline, resources, push_constants, push_constant_bytes,
-        group_x, group_y, group_z, nullptr);
-}
+#include <inferbridge/vulkan/context/vulkan_context_dispatch_buffers_to_image.h>
 
 void VulkanContext::dispatch_resources(
     const VulkanPipeline& pipeline,
@@ -2311,80 +934,11 @@ void VulkanContext::dispatch_resources(
     }
 }
 
-void VulkanContext::destroy(VulkanBuffer& buffer) noexcept {
-    if ((batch_command_ != VK_NULL_HANDLE || segmented_batch_) &&
-        (buffer.buffer_ != VK_NULL_HANDLE ||
-         buffer.memory_ != VK_NULL_HANDLE)) {
-        batch_deferred_buffers_.push_back(
-            {
-                buffer.buffer_,
-                buffer.memory_,
-                buffer.mapped_,
-                buffer.size_,
-                buffer.cacheable_,
-            });
-        buffer.owner_ = nullptr;
-        buffer.buffer_ = VK_NULL_HANDLE;
-        buffer.memory_ = VK_NULL_HANDLE;
-        buffer.mapped_ = nullptr;
-        buffer.size_ = 0;
-        buffer.cacheable_ = false;
-        return;
-    }
-    recycle_or_destroy(
-        {
-            buffer.buffer_,
-            buffer.memory_,
-            buffer.mapped_,
-            buffer.size_,
-            buffer.cacheable_,
-        });
-    buffer.owner_ = nullptr;
-    buffer.buffer_ = VK_NULL_HANDLE;
-    buffer.memory_ = VK_NULL_HANDLE;
-    buffer.mapped_ = nullptr;
-    buffer.size_ = 0;
-    buffer.cacheable_ = false;
-}
+#include <inferbridge/vulkan/context/vulkan_context_destroy_variant_6.h>
 
-void VulkanContext::destroy(VulkanImage& image) noexcept {
-    if (image.sampler_ != VK_NULL_HANDLE) {
-        vkDestroySampler(device_, image.sampler_, nullptr);
-    }
-    if (image.view_ != VK_NULL_HANDLE) {
-        vkDestroyImageView(device_, image.view_, nullptr);
-    }
-    if (image.image_ != VK_NULL_HANDLE) {
-        vkDestroyImage(device_, image.image_, nullptr);
-    }
-    if (image.memory_ != VK_NULL_HANDLE) {
-        vkFreeMemory(device_, image.memory_, nullptr);
-    }
-    image.owner_ = nullptr;
-    image.image_ = VK_NULL_HANDLE;
-    image.memory_ = VK_NULL_HANDLE;
-    image.view_ = VK_NULL_HANDLE;
-    image.sampler_ = VK_NULL_HANDLE;
-    image.format_ = VK_FORMAT_UNDEFINED;
-    image.width_ = 0;
-    image.height_ = 0;
-}
+#include <inferbridge/vulkan/context/vulkan_context_destroy_variant_5.h>
 
-void VulkanContext::destroy(VulkanSubmission& submission) noexcept {
-    if (submission.fence_ != VK_NULL_HANDLE) {
-        (void)vkWaitForFences(
-            device_, 1, &submission.fence_, VK_TRUE, UINT64_MAX);
-        vkDestroyFence(device_, submission.fence_, nullptr);
-    }
-    if (submission.command_ != VK_NULL_HANDLE) {
-        vkFreeCommandBuffers(
-            device_, command_pool_, 1, &submission.command_);
-    }
-    release_submission_resources(submission);
-    submission.owner_ = nullptr;
-    submission.command_ = VK_NULL_HANDLE;
-    submission.fence_ = VK_NULL_HANDLE;
-}
+#include <inferbridge/vulkan/context/vulkan_context_destroy_variant_2.h>
 
 void VulkanContext::release_submission_resources(
     VulkanSubmission& submission) noexcept {
@@ -2411,94 +965,12 @@ void VulkanContext::release_submission_resources(
     submission.resources_ = nullptr;
 }
 
-void VulkanContext::destroy(VulkanSemaphore& semaphore) noexcept {
-    if (semaphore.semaphore_ != VK_NULL_HANDLE) {
-        vkDestroySemaphore(
-            device_, semaphore.semaphore_, nullptr);
-    }
-    semaphore.owner_ = nullptr;
-    semaphore.semaphore_ = VK_NULL_HANDLE;
-    semaphore.value_ = 0;
-}
+#include <inferbridge/vulkan/context/vulkan_context_destroy_variant_1.h>
 
-void VulkanContext::recycle_or_destroy(
-    VulkanDeferredBuffer buffer) noexcept {
-    constexpr VkDeviceSize maximum_device_pool_bytes =
-        VkDeviceSize{2} * 1024 * 1024 * 1024;
-    constexpr VkDeviceSize maximum_host_pool_bytes =
-        VkDeviceSize{64} * 1024 * 1024;
-    if (buffer.cacheable && buffer.buffer && buffer.memory) {
-        if (buffer.mapped &&
-            buffer.size <= maximum_host_pool_bytes - pooled_host_bytes_) {
-            pooled_host_bytes_ += buffer.size;
-            host_buffer_pool_.push_back(buffer);
-            return;
-        }
-        if (!buffer.mapped &&
-            buffer.size <=
-                maximum_device_pool_bytes - pooled_device_bytes_) {
-            pooled_device_bytes_ += buffer.size;
-            device_buffer_pool_.push_back(buffer);
-            return;
-        }
-    }
-    if (buffer.mapped) {
-        vkUnmapMemory(device_, buffer.memory);
-    }
-    if (buffer.buffer) {
-        vkDestroyBuffer(device_, buffer.buffer, nullptr);
-    }
-    if (buffer.memory) {
-        vkFreeMemory(device_, buffer.memory, nullptr);
-    }
-}
+#include <inferbridge/vulkan/context/vulkan_context_recycle_or_destroy.h>
 
-void VulkanContext::discard(VulkanBuffer& buffer) noexcept {
-    if (buffer.owner_ != this || buffer.buffer_ == VK_NULL_HANDLE) {
-        return;
-    }
-    if (batch_command_ != VK_NULL_HANDLE) {
-        destroy(buffer);
-        return;
-    }
-    if (buffer.mapped_) {
-        vkUnmapMemory(device_, buffer.memory_);
-    }
-    vkDestroyBuffer(device_, buffer.buffer_, nullptr);
-    vkFreeMemory(device_, buffer.memory_, nullptr);
-    buffer.owner_ = nullptr;
-    buffer.buffer_ = VK_NULL_HANDLE;
-    buffer.memory_ = VK_NULL_HANDLE;
-    buffer.size_ = 0;
-    buffer.mapped_ = nullptr;
-    buffer.cacheable_ = false;
-}
+#include <inferbridge/vulkan/context/vulkan_context_discard.h>
 
-void VulkanContext::destroy(VulkanPipeline& pipeline) noexcept {
-    if (!pipeline.cached_descriptor_sets_.empty()) {
-        vkFreeDescriptorSets(
-            device_,
-            descriptor_pool_,
-            static_cast<std::uint32_t>(
-                pipeline.cached_descriptor_sets_.size()),
-            pipeline.cached_descriptor_sets_.data());
-        pipeline.cached_descriptor_sets_.clear();
-    }
-    if (pipeline.pipeline_) {
-        vkDestroyPipeline(device_, pipeline.pipeline_, nullptr);
-    }
-    if (pipeline.layout_) {
-        vkDestroyPipelineLayout(device_, pipeline.layout_, nullptr);
-    }
-    if (pipeline.descriptor_layout_) {
-        vkDestroyDescriptorSetLayout(
-            device_, pipeline.descriptor_layout_, nullptr);
-    }
-    pipeline.owner_ = nullptr;
-    pipeline.pipeline_ = VK_NULL_HANDLE;
-    pipeline.layout_ = VK_NULL_HANDLE;
-    pipeline.descriptor_layout_ = VK_NULL_HANDLE;
-    pipeline.descriptor_types_.clear();
-}
+#include <inferbridge/vulkan/context/vulkan_context_destroy_variant_3.h>
 
 }  // namespace vda_native
